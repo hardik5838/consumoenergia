@@ -54,34 +54,21 @@ def get_voltage_type(rate):
 def load_data(file_path):
     """Carga, limpia y procesa los datos de consumo energético de forma eficiente."""
     try:
-        # OPTIMIZACIÓN 1: Especificar solo las columnas que realmente usamos.
-        # Esto reduce drásticamente el uso de memoria y el tiempo de carga.
         cols_to_use = [
             'Estado de factura', 'Fecha desde', 'Provincia', 'Nombre suministro',
             'Tarifa de acceso', 'Consumo activa total (kWh)', 'Base imponible (€)'
         ]
-
-        # OPTIMIZACIÓN 2: Especificar los tipos de datos para evitar que Pandas los infiera.
-        # El tipo 'category' es muy eficiente para columnas con valores repetidos (como provincia).
-        # 'float32' usa menos memoria que el 'float64' por defecto.
-        dtype_map = {
-            'Estado de factura': 'category',
-            'Provincia': 'category',
-            'Nombre suministro': 'string',
-            'Tarifa de acceso': 'category',
-            'Consumo activa total (kWh)': 'float32',
-            'Base imponible (€)': 'float32'
-        }
-
-        # Cargar los datos aplicando las optimizaciones.
+        
+        # Cargar los datos, especificando el separador de miles.
+        # Quitamos la pre-definición de 'dtype' para las columnas numéricas para manejarlas después.
         df = pd.read_csv(
             file_path,
             usecols=cols_to_use,
-            dtype=dtype_map,
-            parse_dates=['Fecha desde'] # Optimización 3: Parsear fechas durante la carga.
+            parse_dates=['Fecha desde'],
+            decimal='.', # El punto es el separador decimal
+            thousands=',' # La coma es el separador de miles
         )
         
-        # El resto del preprocesamiento es igual, pero ahora sobre un DataFrame mucho más pequeño.
         df.columns = df.columns.str.strip()
         df = df[df['Estado de factura'].str.upper() == 'ACTIVA']
 
@@ -91,13 +78,22 @@ def load_data(file_path):
             'Consumo activa total (kWh)': 'Consumo_kWh'
         }, inplace=True)
         
+        # Ahora que los datos están cargados correctamente, convertimos a numérico.
+        # 'errors=coerce' convertirá cualquier valor problemático en NaN (Not a Number).
+        numeric_cols = ['Coste', 'Consumo_kWh']
+        for col in numeric_cols:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+
+        # Eliminar filas donde la conversión numérica falló (si las hubiera).
+        df.dropna(subset=numeric_cols, inplace=True)
+        
         df['Año'] = df['Fecha desde'].dt.year
         df['Mes'] = df['Fecha desde'].dt.month
 
         df['Comunidad Autónoma'] = df['Provincia'].map(province_to_community).astype('category')
         df['Tipo de Tensión'] = df['Tarifa de acceso'].apply(get_voltage_type).astype('category')
         
-        df.dropna(subset=['Comunidad Autónoma', 'Coste', 'Consumo_kWh'], inplace=True)
+        df.dropna(subset=['Comunidad Autónoma'], inplace=True)
 
         return df
         
@@ -105,8 +101,7 @@ def load_data(file_path):
         st.error(f"Error: No se encontró el archivo de datos en la ruta: {file_path}")
         return pd.DataFrame()
     except ValueError as e:
-        # Este error puede ocurrir si una columna esperada no está en el archivo.
-        st.error(f"Error al cargar los datos. Revisa que el archivo CSV tenga las columnas necesarias: {e}")
+        st.error(f"Error al cargar los datos. Revisa que el archivo CSV tenga las columnas necesarias y el formato correcto: {e}")
         return pd.DataFrame()
     except KeyError as e:
         st.error(f"Error de columna: No se encontró la columna requerida: {e}. Por favor, revisa el archivo CSV.")

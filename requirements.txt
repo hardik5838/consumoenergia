@@ -1,0 +1,6 @@
+streamlit
+pandas
+altair
+requests
+altair_data_server
+plotly.express

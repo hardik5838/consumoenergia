@@ -4,16 +4,20 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import os
+import json
+import requests # Necesaria para descargar el mapa GeoJSON
 
 # --- Configuración de la página ---
 st.set_page_config(
-    page_title="Dashboard de Consumo Energético",
-    page_icon="⚡",
+    page_title="Informe Anual de Energía - Asepeyo",
+    page_icon="💡",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# --- Mapeos de Datos ---
+# --- Constantes y Mapeos ---
+CO2_FACTOR = 0.19 # Factor de emisión en tCO2e por MWh. Fuente: REE (Red Eléctrica de España), valor aproximado para 2023/2024.
+
 province_to_community = {
     'Almería': 'Andalucía', 'Cádiz': 'Andalucía', 'Córdoba': 'Andalucía', 'Granada': 'Andalucía',
     'Huelva': 'Andalucía', 'Jaén': 'Andalucía', 'Málaga': 'Andalucía', 'Sevilla': 'Andalucía',
@@ -41,10 +45,8 @@ province_to_community = {
 }
 
 def get_voltage_type(rate):
-    if rate in ["6.1TD", "6.2TD", "6.3TD", "6.4TD"]:
-        return "Alta Tensión"
-    elif rate in ["2.0TD", "3.0TD"]:
-        return "Baja Tensión"
+    if rate in ["6.1TD", "6.2TD", "6.3TD", "6.4TD"]: return "Alta Tensión"
+    elif rate in ["2.0TD", "3.0TD"]: return "Baja Tensión"
     return "No definido"
 
 # --- Carga y Procesamiento de Datos ---
@@ -52,30 +54,25 @@ def get_voltage_type(rate):
 def load_data(file_path):
     try:
         cols_to_use = [
-            'Estado de factura', 'Fecha desde', 'Provincia', 'Nombre suministro',
-            'Tarifa de acceso', 'Consumo activa total (kWh)', 'Base imponible (€)'
+            'CUPS', 'Estado de factura', 'Fecha desde', 'Provincia', 'Nombre suministro',
+            'Tarifa de acceso', 'Consumo activa total (kWh)', 'Base imponible (€)',
+            'Importe TE (€)', 'Importe TP (€)', 'Importe impuestos (€)', 'Importe alquiler (€)',
+            'Importe otros conceptos (€)'
         ]
-        df = pd.read_csv(
-            file_path,
-            usecols=cols_to_use,
-            parse_dates=['Fecha desde'],
-            decimal='.',
-            thousands=','
-        )
-        
+        df = pd.read_csv(file_path, usecols=lambda c: c.strip() in cols_to_use, parse_dates=['Fecha desde'], decimal='.', thousands=',')
         df.columns = df.columns.str.strip()
+        
         df = df[df['Estado de factura'].str.upper() == 'ACTIVA']
-
         df.rename(columns={
-            'Nombre suministro': 'Centro',
-            'Base imponible (€)': 'Coste',
-            'Consumo activa total (kWh)': 'Consumo_kWh'
+            'Nombre suministro': 'Centro', 'Base imponible (€)': 'Coste Total', 'Consumo activa total (kWh)': 'Consumo Eléctrico',
+            'Importe TE (€)': 'Coste Energía', 'Importe TP (€)': 'Coste Potencia', 'Importe impuestos (€)': 'Coste Impuestos',
+            'Importe alquiler (€)': 'Coste Alquiler', 'Importe otros conceptos (€)': 'Coste Otros'
         }, inplace=True)
         
-        numeric_cols = ['Coste', 'Consumo_kWh']
+        numeric_cols = ['Coste Total', 'Consumo Eléctrico', 'Coste Energía', 'Coste Potencia', 'Coste Impuestos', 'Coste Alquiler', 'Coste Otros']
         for col in numeric_cols:
             df[col] = pd.to_numeric(df[col], errors='coerce')
-        df.dropna(subset=numeric_cols, inplace=True)
+        df.fillna(0, inplace=True)
         
         df['Año'] = df['Fecha desde'].dt.year
         df['Mes'] = df['Fecha desde'].dt.month
@@ -84,166 +81,210 @@ def load_data(file_path):
         df.dropna(subset=['Comunidad Autónoma'], inplace=True)
         return df
     except Exception as e:
-        st.error(f"Error al cargar o procesar los datos: {e}")
+        st.error(f"Error al cargar o procesar el archivo '{os.path.basename(file_path)}': {e}")
         return pd.DataFrame()
 
+@st.cache_data
+def get_geojson():
+    url = "https://raw.githubusercontent.com/codeforamerica/click_that_hood/master/public/data/spain-communities.geojson"
+    response = requests.get(url)
+    return response.json()
+
 # --- Barra Lateral (Filtros) ---
-with st.sidebar:
-    st.image("Logo_ASEPEYO.png", width=200)
-    st.title('Filtros de Análisis')
+st.sidebar.image("Logo_ASEPEYO.png", width=200)
+st.sidebar.title('Filtros de Análisis')
 
-    DATA_DIR = "Data/"
-    df_original = pd.DataFrame()
-    
-    try:
-        files = [f for f in os.listdir(DATA_DIR) if f.endswith('.csv')]
-        if not files:
-            st.warning(f"No se encontraron archivos CSV en la carpeta '{DATA_DIR}'.")
-            st.stop()
-        
-        selected_file = st.selectbox("Seleccionar Archivo de Datos", files)
-        file_path = os.path.join(DATA_DIR, selected_file)
-        
-        with st.spinner('Cargando y procesando datos...'):
-            df_original = load_data(file_path)
+DATA_DIR = "Data/"
+df_electricidad = pd.DataFrame()
+df_gas = pd.DataFrame()
+df_comparativa = pd.DataFrame()
 
-    except FileNotFoundError:
-        st.error(f"El directorio '{DATA_DIR}' no fue encontrado. Asegúrate de que la carpeta exista.")
+try:
+    files = [f for f in os.listdir(DATA_DIR) if f.endswith('.csv')]
+    if not files:
+        st.sidebar.warning(f"No se encontraron archivos CSV en la carpeta '{DATA_DIR}'.")
         st.stop()
     
-    if not df_original.empty:
-        st.markdown("### 📅 Filtro Temporal")
-        selected_year = st.selectbox('Seleccionar Año', sorted(df_original['Año'].unique(), reverse=True))
-        time_aggregation = st.radio("Vista Temporal", ('Mensual', 'Acumulada Anual'), horizontal=True)
+    # --- Selección de archivos ---
+    st.sidebar.markdown("### 📂 Selección de Datos")
+    selected_file_electricidad = st.sidebar.selectbox("Archivo de Electricidad (Año Actual)", files)
+    
+    # Placeholder para el archivo de gas
+    # selected_file_gas = st.sidebar.selectbox("Archivo de Gas (Opcional)", [None] + files)
+    
+    comparar_anos = st.sidebar.toggle("Comparar con año anterior")
+    if comparar_anos:
+        selected_file_comparativa = st.sidebar.selectbox("Archivo de Electricidad (Año Anterior)", files)
+    
+    file_path_electricidad = os.path.join(DATA_DIR, selected_file_electricidad)
+    with st.spinner('Cargando datos actuales...'):
+        df_electricidad = load_data(file_path_electricidad)
+    
+    if comparar_anos and selected_file_comparativa:
+        file_path_comparativa = os.path.join(DATA_DIR, selected_file_comparativa)
+        with st.spinner('Cargando datos de comparación...'):
+            df_comparativa = load_data(file_path_comparativa)
 
-        st.markdown("---")
-        st.markdown("### 🌍 Filtro Geográfico")
-        
-        if 'last_file_processed' not in st.session_state or st.session_state.last_file_processed != selected_file:
-            st.session_state.last_file_processed = selected_file
-            st.session_state.selected_communities = sorted(df_original['Comunidad Autónoma'].unique().tolist())
-        
-        lista_comunidades = sorted(df_original['Comunidad Autónoma'].unique().tolist())
-        
-        if st.button("Seleccionar Todas las Comunidades", use_container_width=True):
-            st.session_state.selected_communities = lista_comunidades
-            st.rerun()
-        
-        selected_communities = st.multiselect(
-            'Seleccionar Comunidades', lista_comunidades, default=st.session_state.get('selected_communities', [])
-        )
-        st.session_state.selected_communities = selected_communities
+except FileNotFoundError:
+    st.sidebar.error(f"El directorio '{DATA_DIR}' no fue encontrado.")
+    st.stop()
 
-        # --- NUEVO: Toggle y filtro para vista por Centro ---
-        st.markdown("---")
-        st.markdown("### 🔬 Filtro por Centro")
-        vista_por_centro = st.toggle('Activar filtro por Centro')
-        selected_centros = []
-        if vista_por_centro:
-            centros_disponibles = sorted(df_original[df_original['Comunidad Autónoma'].isin(selected_communities)]['Centro'].unique().tolist())
-            if centros_disponibles:
-                selected_centros = st.multiselect('Seleccionar Centros', centros_disponibles, default=centros_disponibles)
-            else:
-                st.warning("No hay centros para las comunidades seleccionadas.")
+if not df_electricidad.empty:
+    st.sidebar.markdown("### 📅 Filtro Temporal")
+    selected_year = st.sidebar.selectbox('Seleccionar Año', sorted(df_electricidad['Año'].unique(), reverse=True))
+    time_aggregation = st.sidebar.radio("Vista Temporal", ('Mensual', 'Acumulada Anual'), horizontal=True)
 
-        st.markdown("---")
-        st.markdown("### ⚡ Otros Filtros")
-        
-        tension_types = sorted(df_original['Tipo de Tensión'].unique().tolist())
-        selected_tension = st.multiselect('Tipo de Tensión', tension_types, default=tension_types)
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### 🌍 Filtro Geográfico")
+    
+    lista_comunidades = sorted(df_electricidad['Comunidad Autónoma'].unique().tolist())
+    selected_communities = st.sidebar.multiselect('Seleccionar Comunidades', lista_comunidades, default=lista_comunidades)
+    
+    st.sidebar.markdown("### 🔬 Filtro por Centro")
+    vista_por_centro = st.sidebar.toggle('Activar filtro por Centro')
+    selected_centros = []
+    if vista_por_centro:
+        centros_disponibles = sorted(df_electricidad[df_electricidad['Comunidad Autónoma'].isin(selected_communities)]['Centro'].unique().tolist())
+        if centros_disponibles:
+            selected_centros = st.sidebar.multiselect('Seleccionar Centros', centros_disponibles, default=centros_disponibles)
+        else:
+            st.sidebar.warning("No hay centros para las comunidades seleccionadas.")
+            
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### ⚡ Otros Filtros")
+    tension_types = sorted(df_electricidad['Tipo de Tensión'].unique().tolist())
+    selected_tension = st.sidebar.multiselect('Tipo de Tensión', tension_types, default=tension_types)
 
 # --- Lógica de la Aplicación Principal ---
-if not df_original.empty:
-    df_filtered = df_original[
-        (df_original['Año'] == selected_year) &
-        (df_original['Comunidad Autónoma'].isin(selected_communities)) &
-        (df_original['Tipo de Tensión'].isin(selected_tension))
-    ].copy()
-
-    # --- LÓGICA ACTUALIZADA: Aplicar filtro de centro si está activo ---
+if not df_electricidad.empty:
+    
+    # Filtrado de datos del año actual
+    df_filtered = df_electricidad[(df_electricidad['Año'] == selected_year) & (df_electricidad['Comunidad Autónoma'].isin(selected_communities)) & (df_electricidad['Tipo de Tensión'].isin(selected_tension))].copy()
     if vista_por_centro and selected_centros:
         df_filtered = df_filtered[df_filtered['Centro'].isin(selected_centros)]
+    
+    # --- KPIs ---
+    st.title(f"Informe Energético Anual - {selected_year}")
+    
+    kwh_elec = df_filtered['Consumo Eléctrico'].sum()
+    cost_elec = df_filtered['Coste Total'].sum()
+    kwh_gas = 0 # Placeholder
+    cost_gas = 0 # Placeholder
+    total_kwh = kwh_elec + kwh_gas
+    total_cost = cost_elec + cost_gas
+    num_suministros = df_filtered['CUPS'].nunique()
+    emisiones_co2 = (kwh_elec * CO2_FACTOR) / 1000 # tCO2e
+    coste_medio = total_cost / total_kwh if total_kwh > 0 else 0
 
-    st.title(f"Dashboard de Consumo Energético - {selected_year}")
-    st.markdown(f"**Archivo de datos:** `{selected_file}`")
+    st.subheader("Indicadores Energéticos Globales")
+    kpi_main1, kpi_main2, kpi_main3, kpi_main4 = st.columns(4)
+    kpi_main1.metric("Consumo Energético Total", f"{total_kwh:,.0f} kWh")
+    kpi_main2.metric("Coste Energético Total", f"€ {total_cost:,.2f}")
+    kpi_main3.metric("Emisiones CO₂", f"{emisiones_co2:,.2f} tCO₂e")
+    kpi_main4.metric("Nº Suministros Activos", f"{num_suministros}")
+    
+    st.markdown("<br>", unsafe_allow_html=True)
+    
+    kpi_sub1, kpi_sub2, kpi_sub3, kpi_sub4, kpi_sub5 = st.columns(5)
+    kpi_sub1.metric("Consumo Eléctrico", f"{kwh_elec:,.0f} kWh")
+    kpi_sub2.metric("Coste Eléctrico", f"€ {cost_elec:,.2f}")
+    kpi_sub3.metric("Consumo Gas", "N/A")
+    kpi_sub4.metric("Coste Gas", "N/A")
+    kpi_sub5.metric("Coste Medio", f"€ {coste_medio:.3f}/kWh")
     st.markdown("---")
-
+    
+    # --- Cuerpo del Dashboard ---
     if not df_filtered.empty:
-        total_kwh = df_filtered['Consumo_kWh'].sum()
-        total_cost = df_filtered['Coste'].sum()
-
-        kpi1, kpi2, kpi3 = st.columns(3)
-        kpi1.metric(label="Consumo Total Electricidad", value=f"{total_kwh:,.0f} kWh")
-        kpi2.metric(label="Coste Total Electricidad", value=f"€ {total_cost:,.2f}")
-        kpi3.metric(label="Consumo Total Gas", value="N/A", help="Datos no disponibles.")
-        st.markdown("---")
-        
-        # --- LÓGICA ACTUALIZADA: Agrupación dinámica ---
+        # Lógica de Agregación
         columna_agrupar = 'Centro' if vista_por_centro and selected_centros else 'Provincia'
-        header_text = f"Vista Detallada por {columna_agrupar}" if vista_por_centro else f"Vista Agrupada por {columna_agrupar}"
-
-        if time_aggregation == 'Mensual':
-            df_agg = df_filtered.groupby(['Mes', columna_agrupar, 'Tipo de Tensión'])[['Consumo_kWh', 'Coste']].sum().reset_index()
-            time_label = "Mensual"
-        else:
-            df_agg = df_filtered.groupby([columna_agrupar, 'Tipo de Tensión'])[['Consumo_kWh', 'Coste']].sum().reset_index()
-            time_label = "Acumulado Anual"
         
-        st.header(f"{header_text} ({time_label})")
+        # --- Desglose de Costes y Mapa Geográfico ---
+        st.subheader("Análisis de Costes y Distribución Geográfica")
+        map_col, cost_col = st.columns([0.6, 0.4])
+        with cost_col:
+            cost_components = ['Coste Energía', 'Coste Potencia', 'Coste Impuestos', 'Coste Alquiler', 'Coste Otros']
+            cost_breakdown = df_filtered[cost_components].sum().reset_index()
+            cost_breakdown.columns = ['Componente', 'Coste']
+            fig_cost_pie = px.pie(cost_breakdown, names='Componente', values='Coste', title='Desglose de Costes Eléctricos', hole=0.4)
+            st.plotly_chart(fig_cost_pie, use_container_width=True)
+
+        with map_col:
+            geojson = get_geojson()
+            df_map = df_filtered.groupby('Comunidad Autónoma')['Consumo Eléctrico'].sum().reset_index()
+            fig_map = px.choropleth_mapbox(df_map, geojson=geojson, locations='Comunidad Autónoma',
+                                           featureidkey="properties.name",
+                                           color='Consumo Eléctrico',
+                                           color_continuous_scale="Viridis",
+                                           mapbox_style="carto-positron",
+                                           zoom=4.5, center = {"lat": 40.4168, "lon": -3.7038},
+                                           title="Consumo Eléctrico por Comunidad Autónoma")
+            st.plotly_chart(fig_map, use_container_width=True)
+
+        st.markdown("---")
+
+        # --- Evolución y Comparativas ---
+        st.subheader(f"Análisis por {columna_agrupar} y Evolución Mensual")
         col1, col2 = st.columns(2, gap="large")
-
         with col1:
-            st.subheader(f"Consumo y Coste por {columna_agrupar}")
-            df_grouped = df_agg.groupby(columna_agrupar)[['Consumo_kWh', 'Coste']].sum().reset_index().sort_values(by='Consumo_kWh', ascending=False)
+            df_grouped = df_filtered.groupby(columna_agrupar)[['Consumo Eléctrico', 'Coste Total']].sum().reset_index()
+            fig_bar = px.bar(df_grouped.sort_values(by='Consumo Eléctrico', ascending=False),
+                             x=columna_agrupar, y='Consumo Eléctrico', title=f'Consumo por {columna_agrupar}')
+            st.plotly_chart(fig_bar, use_container_width=True)
             
-            fig1 = go.Figure()
-            fig1.add_trace(go.Bar(x=df_grouped[columna_agrupar], y=df_grouped['Consumo_kWh'], name='Consumo (kWh)', marker_color='blue'))
-            fig1.add_trace(go.Scatter(x=df_grouped[columna_agrupar], y=df_grouped['Coste'], name='Coste (€)', mode='lines+markers', yaxis='y2', marker_color='red'))
-            fig1.update_layout(
-                template="plotly_white", xaxis_title=columna_agrupar, yaxis=dict(title='Consumo (kWh)'),
-                yaxis2=dict(title='Coste (€)', overlaying='y', side='right'), legend_title_text='Métrica',
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-            )
-            st.plotly_chart(fig1, use_container_width=True)
+            df_cost_unit = df_filtered.groupby('Mes')['Coste Total'].sum() / df_filtered.groupby('Mes')['Consumo Eléctrico'].sum()
+            df_cost_unit = df_cost_unit.reset_index(name='Coste Medio €/kWh').sort_values('Mes')
+            df_cost_unit['Mes'] = df_cost_unit['Mes'].apply(lambda x: pd.to_datetime(f'{selected_year}-{x}-01').strftime('%b'))
+            fig_line_cost = px.line(df_cost_unit, x='Mes', y='Coste Medio €/kWh', title='Evolución Mensual del Coste Medio', markers=True)
+            st.plotly_chart(fig_line_cost, use_container_width=True)
 
-            st.subheader(f"Distribución por Tipo de Tensión ({time_label})")
-            df_tension = df_agg.groupby('Tipo de Tensión')[['Consumo_kWh', 'Coste']].sum().reset_index()
-            fig_pie_consumo = px.pie(df_tension, names='Tipo de Tensión', values='Consumo_kWh', title='Distribución del Consumo (kWh)')
-            st.plotly_chart(fig_pie_consumo, use_container_width=True)
 
         with col2:
-            st.subheader(f"Evolución Mensual del Consumo y Coste")
-            if time_aggregation == 'Mensual':
-                df_monthly = df_filtered.groupby('Mes')[['Consumo_kWh', 'Coste']].sum().reset_index()
-                df_monthly['Mes'] = df_monthly['Mes'].apply(lambda x: pd.to_datetime(f'{selected_year}-{x}-01').strftime('%b'))
-
-                fig2 = go.Figure()
-                fig2.add_trace(go.Bar(x=df_monthly['Mes'], y=df_monthly['Consumo_kWh'], name='Consumo (kWh)', marker_color='lightblue'))
-                fig2.add_trace(go.Scatter(x=df_monthly['Mes'], y=df_monthly['Coste'], name='Coste (€)', mode='lines+markers', yaxis='y2', marker_color='orange'))
-                fig2.update_layout(
-                    template="plotly_white", yaxis=dict(title='Consumo (kWh)'),
-                    yaxis2=dict(title='Coste (€)', overlaying='y', side='right'), legend_title_text='Métrica',
-                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-                )
-                st.plotly_chart(fig2, use_container_width=True)
-            else:
-                st.info("La vista de evolución mensual solo está disponible en la agregación 'Mensual'.")
+            df_monthly = df_filtered.groupby('Mes')[['Consumo Eléctrico', 'Coste Total']].sum().reset_index()
+            df_monthly['Mes'] = df_monthly['Mes'].apply(lambda x: pd.to_datetime(f'{selected_year}-{x}-01').strftime('%b'))
             
-            fig_pie_coste = px.pie(df_tension, names='Tipo de Tensión', values='Coste', title='Distribución del Coste (€)')
-            st.plotly_chart(fig_pie_coste, use_container_width=True)
+            fig_line = go.Figure()
+            fig_line.add_trace(go.Bar(x=df_monthly['Mes'], y=df_monthly['Consumo Eléctrico'], name='Consumo (kWh)', marker_color='lightblue'))
+            fig_line.add_trace(go.Scatter(x=df_monthly['Mes'], y=df_monthly['Coste Total'], name='Coste (€)', mode='lines+markers', yaxis='y2', marker_color='orange'))
+            fig_line.update_layout(title="Evolución Mensual (Consumo vs Coste)", yaxis=dict(title='Consumo (kWh)'), yaxis2=dict(title='Coste (€)', overlaying='y', side='right'), template="plotly_white")
+            st.plotly_chart(fig_line, use_container_width=True)
+            
+            st.markdown("##### Top 10 Centros con Mayor Impacto")
+            sort_by = st.radio("Ordenar por:", ('Consumo', 'Coste'), horizontal=True, key="top10_sort")
+            sort_col = 'Consumo Eléctrico' if sort_by == 'Consumo' else 'Coste Total'
+            top_10 = df_filtered.groupby('Centro')[sort_col].sum().nlargest(10).sort_values(ascending=True).reset_index()
+            fig_top10 = px.bar(top_10, x=sort_col, y='Centro', orientation='h', text_auto=True)
+            fig_top10.update_layout(yaxis={'categoryorder':'total ascending'}, yaxis_title=None)
+            st.plotly_chart(fig_top10, use_container_width=True)
+        
+        # --- Sección de Comparativa Anual (si aplica) ---
+        if comparar_anos and not df_comparativa.empty:
+            st.markdown("---")
+            st.subheader("Comparativa Anual")
+            df_comp_filtered = df_comparativa[
+                (df_comparativa['Comunidad Autónoma'].isin(selected_communities)) & 
+                (df_comparativa['Tipo de Tensión'].isin(selected_tension))
+            ]
+            if vista_por_centro and selected_centros:
+                df_comp_filtered = df_comp_filtered[df_comp_filtered['Centro'].isin(selected_centros)]
 
-        st.markdown("---")
-        st.header("Tabla de Datos Detallados")
-        with st.expander("Mostrar/Ocultar Tabla de Datos"):
-            columnas_a_mostrar = ['Fecha desde', 'Centro', 'Provincia', 'Comunidad Autónoma', 'Tipo de Tensión', 'Consumo_kWh', 'Coste']
-            st.dataframe(
-                df_filtered[columnas_a_mostrar].sort_values(by='Fecha desde'),
-                use_container_width=True, hide_index=True,
-                column_config={
-                    "Fecha desde": st.column_config.DateColumn("Fecha Factura", format="DD/MM/YYYY"),
-                    "Consumo_kWh": st.column_config.NumberColumn("Consumo (kWh)", format="%d kWh"),
-                    "Coste": st.column_config.NumberColumn("Coste (€)", format="€ %.2f"),
-                }
-            )
+            if not df_comp_filtered.empty:
+                df_current_year = df_filtered.groupby('Mes')['Consumo Eléctrico'].sum().reset_index()
+                df_current_year['Año'] = str(selected_year)
+                
+                prev_year = df_comp_filtered['Año'].unique()[0]
+                df_prev_year = df_comp_filtered.groupby('Mes')['Consumo Eléctrico'].sum().reset_index()
+                df_prev_year['Año'] = str(prev_year)
+                
+                df_comparison = pd.concat([df_current_year, df_prev_year])
+                df_comparison['Mes'] = df_comparison['Mes'].apply(lambda x: pd.to_datetime(f'2024-{x}-01').strftime('%b'))
+
+                fig_comp = px.bar(df_comparison, x='Mes', y='Consumo Eléctrico', color='Año', barmode='group',
+                                  title=f'Comparativa de Consumo Mensual: {selected_year} vs. {prev_year}')
+                st.plotly_chart(fig_comp, use_container_width=True)
+            else:
+                st.warning("No hay datos de comparación disponibles para los filtros seleccionados.")
+
     else:
-        st.warning("No hay datos disponibles para la selección de filtros actual. Por favor, ajusta los filtros.")
+        st.warning("No hay datos disponibles para la selección de filtros actual.")
+else:
+    st.error("No se pudo cargar el archivo de datos principal. Por favor, revisa la configuración en la barra lateral.")

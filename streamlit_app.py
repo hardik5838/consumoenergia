@@ -208,9 +208,24 @@ if not df_electricidad.empty:
             fig_cost_pie = px.pie(cost_breakdown, names='Componente', values='Coste', title='Desglose de Costes Eléctricos', hole=0.4)
             st.plotly_chart(fig_cost_pie, use_container_width=True)
 
-        with map_col:
+         with map_col:
             geojson = get_geojson()
             df_map = df_filtered.groupby('Comunidad Autónoma')['Consumo Eléctrico'].sum().reset_index()
+
+            # --- CÓDIGO AÑADIDO: Mapeo de nombres para el mapa ---
+            # Este diccionario "traduce" nuestros nombres a los que el archivo GeoJSON espera.
+            map_name_to_geojson_name = {
+                "Principado de Asturias": "Asturias",
+                "Islas Baleares": "Illes Balears",
+                "País Vasco": "País Vasco / Euskadi",
+                "Comunidad Foral de Navarra": "Navarra",
+                "Comunidad Valenciana": "Comunidad Valenciana", # Aseguramos que se mantenga el nombre correcto
+                "Región de Murcia": "Región de Murcia" # Aseguramos que se mantenga el nombre correcto
+            }
+            # Aplicamos el mapeo a la columna que usará el gráfico.
+            df_map['Comunidad Autónoma'] = df_map['Comunidad Autónoma'].replace(map_name_to_geojson_name)
+            # --- FIN DEL CÓDIGO AÑADIDO ---
+            
             fig_map = px.choropleth_mapbox(df_map, geojson=geojson, locations='Comunidad Autónoma',
                                            featureidkey="properties.name",
                                            color='Consumo Eléctrico',

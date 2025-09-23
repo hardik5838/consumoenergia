@@ -328,16 +328,23 @@ if not df_combined.empty:
             fig_bar_energy.update_layout(xaxis={'categoryorder':'total descending'})
             st.plotly_chart(fig_bar_energy, use_container_width=True)
             
-        with col2:
-            st.markdown("**Evolución Mensual del Consumo**")
-            df_monthly = df_filtered.groupby(['Mes', 'Tipo de Energía'])['Consumo_kWh'].sum().reset_index()
-            df_monthly['Mes_str'] = df_monthly['Mes'].apply(lambda x: pd.to_datetime(f'{selected_year}-{x}-01').strftime('%b'))
-            
-            fig_line = px.line(df_monthly, x='Mes_str', y='Consumo_kWh', color='Tipo de Energía',
-                               title="Consumo Mensual por Tipo de Energía", markers=True,
-                               category_orders={"Mes_str": ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"]})
-            st.plotly_chart(fig_line, use_container_width=True)
 
+        with col2:
+            st.markdown("**Evolución Mensual del Consumo**")
+            df_monthly = df_filtered.groupby(['Mes', 'Tipo de Energía'])['Consumo_kWh'].sum().reset_index()
+            
+            # --- AJUSTE: Ordenar los datos por mes ---
+            # Esta es la clave para que la línea se dibuje en el orden correcto.
+            df_monthly = df_monthly.sort_values('Mes')
+
+            df_monthly['Mes_str'] = df_monthly['Mes'].apply(lambda x: pd.to_datetime(f'{selected_year}-{x}-01').strftime('%b'))
+            
+            fig_line = px.line(df_monthly, x='Mes_str', y='Consumo_kWh', color='Tipo de Energía',
+                               title="Consumo Mensual por Tipo de Energía", markers=True,
+                               category_orders={"Mes_str": ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"]})
+            st.plotly_chart(fig_line, use_container_width=True)
+        
+        
         # --- Comparativa Anual ---
         if comparar_anos and not df_comparativa.empty and not df_filtered.empty:
             st.markdown("---")

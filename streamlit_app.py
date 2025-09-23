@@ -96,67 +96,82 @@ def load_electricity_data(file_path):
         return pd.DataFrame()
 
 @st.cache_data
-def load_gas_data(consumos_path, importes_path, year):
+def load_gas_data(consumos_path, importes_path):
     """
-    Robustly loads and processes gas data, handling files with or without footers
-    and variations in month column names.
+    Robustly loads, processes, and merges gas consumption and cost data from
+    complex TSV files containing multiple years and non-data rows.
     """
-    def robust_read_gas(file_path):
-        """Tries to read a gas file with a footer, falls back to a normal read if it fails."""
-        try:
-            # First attempt: assume a 2-row footer (for complete annual reports)
-            return pd.read_csv(file_path, skiprows=4, sep='\t', decimal='.', thousands=',', skipfooter=2, engine='python')
-        except (ValueError, pd.errors.EmptyDataError):
-            # Fallback: read without skipping footer (for incomplete monthly reports)
-            return pd.read_csv(file_path, skiprows=4, sep='\t', decimal='.', thousands=',')
+    def process_gas_file(file_path, value_name):
+        """
+        Internal function to read and clean a single gas TSV file (consumption or cost),
+        transforming it from a wide to a long format.
+        """
+        # 1. Read the TSV, correctly identifying the header on the 5th line (index 4).
+        df = pd.read_csv(file_path, sep='\t', header=4, decimal='.', thousands=',')
+        df.columns = df.columns.str.strip()
+
+        # 2. Robustly filter out all non-data rows (TOTALS, footers, etc.)
+        #    by keeping only rows where the first column ('Nº') is a valid number.
+        df.dropna(subset=['Nº'], inplace=True)
+        df = df[pd.to_numeric(df['Nº'], errors='coerce').notna()].copy()
+        
+        # 3. Define the structure for melting data from two different years.
+        id_vars = ['Descripción', 'CUPS', 'Provincia']
+        months_base = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic']
+        
+        # Pandas renames duplicate columns with a ".1" suffix. We target these for the second year.
+        months_2024_cols = [m for m in months_base if m in df.columns]
+        months_2025_cols = [f'{m}.1' for m in months_base if f'{m}.1' in df.columns]
+
+        df_2024_long, df_2025_long = pd.DataFrame(), pd.DataFrame()
+
+        # 4. Process the first year's data (2024)
+        if months_2024_cols:
+            df_2024_long = pd.melt(df, id_vars=id_vars, value_vars=months_2024_cols, var_name='Mes_str', value_name=value_name)
+            df_2024_long['Año'] = 2024
+            
+        # 5. Process the second year's data (2025)
+        if months_2025_cols:
+            df_2025_long = pd.melt(df, id_vars=id_vars, value_vars=months_2025_cols, var_name='Mes_str', value_name=value_name)
+            df_2025_long['Año'] = 2025
+            # Clean the month names by removing the ".1" suffix.
+            df_2025_long['Mes_str'] = df_2025_long['Mes_str'].str.replace('.1', '', regex=False)
+
+        # 6. Combine data from both years into a single long-format DataFrame.
+        return pd.concat([df_2024_long, df_2025_long], ignore_index=True)
 
     try:
-        df_consumos = robust_read_gas(consumos_path)
-        df_importes = robust_read_gas(importes_path)
+        # Process both the consumption and cost files.
+        consumos_long = process_gas_file(consumos_path, 'Consumo_kWh')
+        importes_long = process_gas_file(importes_path, 'Coste Total')
 
-        if df_consumos.empty or df_importes.empty:
-            st.warning("One of the gas files appears empty after loading.")
+        if consumos_long.empty or importes_long.empty:
+            st.warning("Gas data could not be processed. One or more gas files might be empty or in an unexpected format.")
             return pd.DataFrame()
 
-        # Standardize column names for reliable processing
-        df_consumos.columns = df_consumos.columns.str.strip()
-        df_importes.columns = df_importes.columns.str.strip()
-        
-        id_vars = ['Descripción', 'CUPS', 'Provincia']
-        # Use capitalized month names as they appear in the source files
-        months_cols = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic']
-        
-        # Filter for only the month columns that actually exist in the file
-        value_vars_consumos = [col for col in months_cols if col in df_consumos.columns]
-        value_vars_importes = [col for col in months_cols if col in df_importes.columns]
+        # Merge the two DataFrames into a single, comprehensive gas dataset.
+        df_gas = pd.merge(consumos_long, importes_long, on=['Descripción', 'CUPS', 'Provincia', 'Año', 'Mes_str'])
 
-        # Melt data from wide to long format
-        consumos_long = pd.melt(df_consumos, id_vars=id_vars, value_vars=value_vars_consumos, var_name='Mes_str', value_name='Consumo_kWh')
-        importes_long = pd.melt(df_importes, id_vars=id_vars, value_vars=value_vars_importes, var_name='Mes_str', value_name='Coste Total')
-        
-        # Merge consumption and cost data
-        df_gas = pd.merge(consumos_long, importes_long, on=['Descripción', 'CUPS', 'Provincia', 'Mes_str'])
+        # Final cleaning, mapping, and type conversion.
+        df_gas['Consumo_kWh'] = pd.to_numeric(df_gas['Consumo_kWh'], errors='coerce').fillna(0)
+        df_gas['Coste Total'] = pd.to_numeric(df_gas['Coste Total'], errors='coerce').fillna(0)
 
-        # Data cleaning and type conversion
-        df_gas['Consumo_kWh'] = pd.to_numeric(df_gas['Consumo_kWh'], errors='coerce')
-        df_gas['Coste Total'] = pd.to_numeric(df_gas['Coste Total'], errors='coerce')
-        df_gas.fillna(0, inplace=True)
-
-        month_map = {name: i + 1 for i, name in enumerate(months_cols)}
+        month_map = {name: i + 1 for i, name in enumerate(['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'])}
         df_gas['Mes'] = df_gas['Mes_str'].map(month_map)
-        df_gas['Año'] = year
+        
         df_gas.rename(columns={'Descripción': 'Centro'}, inplace=True)
         df_gas['Tipo de Energía'] = 'Gas'
         df_gas['Comunidad Autónoma'] = df_gas['Provincia'].map(province_to_community)
         
-        # Final cleanup
         df_gas.dropna(subset=['Comunidad Autónoma', 'Mes'], inplace=True)
         df_gas = df_gas[df_gas['Consumo_kWh'] > 0]
         df_gas['Fecha desde'] = pd.to_datetime(df_gas['Año'].astype(str) + '-' + df_gas['Mes'].astype(str) + '-01')
         
+        # Return the clean, ready-to-use DataFrame.
         return df_gas[['Fecha desde', 'Centro', 'Provincia', 'Comunidad Autónoma', 'Consumo_kWh', 'Coste Total', 'Tipo de Energía', 'Año', 'Mes', 'CUPS']]
+    
     except Exception as e:
-        st.error(f"Error processing gas files: {e}")
+        st.error(f"A critical error occurred while processing the gas files: {e}")
         return pd.DataFrame()
 
 @st.cache_data
@@ -210,9 +225,8 @@ try:
             path_gas_consumos = os.path.join(DATA_DIR, gas_consumos_file)
             path_gas_importes = os.path.join(DATA_DIR, gas_importes_file)
             # Asumimos que el año de los archivos de gas es el mismo que el de electricidad
-            if not df_electricidad.empty:
-                gas_year = df_electricidad['Año'].iloc[0]
-                df_gas = load_gas_data(path_gas_consumos, path_gas_importes, gas_year)
+           df_gas = load_gas_data(path_gas_consumos, path_gas_importes)
+
         
         if comparar_anos and selected_file_comparativa:
             path_comp = os.path.join(DATA_DIR, selected_file_comparativa)

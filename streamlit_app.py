@@ -342,7 +342,9 @@ if not df_combined.empty:
                                        title="Consumo Mensual por Tipo de Energía", markers=True,
                                        category_orders={"Mes_str": ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"]})
                     st.plotly_chart(fig_line, use_container_width=True)
-        # --- Comparativa Anual ---
+
+
+    # --- Comparativa Anual ---
         if comparar_anos and not df_comparativa.empty and not df_filtered.empty:
             st.markdown("---")
             st.subheader("Comparativa Anual de Electricidad")
@@ -352,20 +354,28 @@ if not df_combined.empty:
 
             if not df_comp_filtered.empty:
                 prev_year = df_comp_filtered['Año'].unique()[0]
-                df_current_year_monthly = df_filtered[df_filtered['Tipo de Energía'] == 'Electricidad'].groupby('Mes')['Consumo Eléctrico'].sum()
-                df_prev_year_monthly = df_comp_filtered.groupby('Mes')['Consumo Eléctrico'].sum()
+
+                # --- AJUSTE 1: Corregir nombre de la columna ---
+                # El nombre correcto es 'Consumo_kWh', no 'Consumo Eléctrico'.
+                df_current_year_monthly = df_filtered[df_filtered['Tipo de Energía'] == 'Electricidad'].groupby('Mes')['Consumo_kWh'].sum()
+                df_prev_year_monthly = df_comp_filtered.groupby('Mes')['Consumo_kWh'].sum()
                 
                 comparison_df = pd.DataFrame({
                     str(selected_year): df_current_year_monthly,
                     str(prev_year): df_prev_year_monthly
                 }).reset_index()
+
+                # --- AJUSTE 2: Ordenar por mes antes de graficar ---
+                # Esta es la clave para que el eje X del gráfico de barras se vea ordenado.
+                comparison_df = comparison_df.sort_values('Mes')
+                
                 comparison_df['Mes'] = comparison_df['Mes'].apply(lambda x: pd.to_datetime(f'2024-{x}-01').strftime('%b'))
                 
                 fig_comp = px.bar(comparison_df, x='Mes', y=[str(selected_year), str(prev_year)], barmode='group',
                                   title=f'Comparativa de Consumo Mensual: {selected_year} vs. {prev_year}',
                                   labels={'value': 'Consumo Eléctrico (kWh)'})
                 st.plotly_chart(fig_comp, use_container_width=True)
-
+    
     else:
         st.warning("No hay datos disponibles para la selección de filtros actual.")
 else:

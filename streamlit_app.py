@@ -330,10 +330,15 @@ if not df_combined.empty:
             
         with col2:
                     st.markdown("**Evolución Mensual del Consumo**")
-                    df_monthly = df_filtered.groupby(['Mes', 'Tipo de Energía'])['Consumo_kWh'].sum().reset_index()
+        
+                    # --- AJUSTE DEFINITIVO: Forzar el filtro del año seleccionado ---
+                    # Creamos un nuevo DataFrame para el gráfico, asegurándonos de que SOLO
+                    # contenga datos del año seleccionado en el filtro. Esto evita cualquier
+                    # "contaminación" de datos del archivo de comparación.
+                    df_grafico = df_filtered[df_filtered['Año'] == selected_year].copy()
                     
-                    # --- AJUSTE: Ordenar los datos por mes ---
-                    # Esta es la clave para que la línea se dibuje en el orden correcto.
+                    # Ahora, creamos los datos mensuales a partir de este DataFrame limpio y ordenado
+                    df_monthly = df_grafico.groupby(['Mes', 'Tipo de Energía'])['Consumo_kWh'].sum().reset_index()
                     df_monthly = df_monthly.sort_values('Mes')
         
                     df_monthly['Mes_str'] = df_monthly['Mes'].apply(lambda x: pd.to_datetime(f'{selected_year}-{x}-01').strftime('%b'))

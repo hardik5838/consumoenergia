@@ -358,23 +358,29 @@ if not df_combined.empty:
         with col2:
             st.markdown("**Evolución Mensual del Consumo**")
 
-            # --- PASO 1: Crear una plantilla de 12 meses para el año seleccionado ---
+            # --- PASO 1: Crear una plantilla completa para todos los meses y tipos de energía ---
+            # Esto garantiza que siempre tengamos una estructura de 12 meses para Electricidad y Gas.
+            tipos_energia_esperados = ['Electricidad', 'Gas']
             fechas_del_ano = pd.to_datetime([f'{selected_year}-{m}-01' for m in range(1, 13)])
-            plantilla_df = pd.DataFrame({'Fecha': fechas_del_ano})
+            
+            # Creamos un DataFrame con todas las combinaciones posibles de fecha y tipo de energía.
+            plantilla_completa = pd.MultiIndex.from_product(
+                [fechas_del_ano, tipos_energia_esperados], 
+                names=['Fecha', 'Tipo de Energía']
+            ).to_frame(index=False)
 
-            # --- PASO 2: Preparar los datos de consumo existentes ---
+            # --- PASO 2: Preparar los datos de consumo reales ---
             df_chart_source = df_filtered[df_filtered['Año'] == selected_year].copy()
+
             if not df_chart_source.empty:
                 df_chart_source['Fecha'] = pd.to_datetime(df_chart_source['Año'].astype(str) + '-' + df_chart_source['Mes'].astype(str) + '-01')
                 df_consumo_real = df_chart_source.groupby(['Fecha', 'Tipo de Energía'])['Consumo_kWh'].sum().reset_index()
 
-                # --- PASO 3: Crear una tabla pivote y fusionarla con la plantilla ---
-                df_pivot = df_consumo_real.pivot_table(index='Fecha', columns='Tipo de Energía', values='Consumo_kWh').reset_index()
-                df_to_plot_wide = pd.merge(plantilla_df, df_pivot, on='Fecha', how='left').fillna(0)
+                # --- PASO 3: Fusionar los datos reales con la plantilla completa ---
+                # El 'left merge' mantiene todas las filas de la plantilla y añade los datos de consumo.
+                # Los meses sin consumo quedarán como NaN, que rellenamos con 0.
+                df_to_plot = pd.merge(plantilla_completa, df_consumo_real, on=['Fecha', 'Tipo de Energía'], how='left').fillna(0)
                 
-                # Convertir de formato ancho a largo para graficar
-                df_to_plot = df_to_plot_wide.melt(id_vars='Fecha', value_name='Consumo_kWh', var_name='Tipo de Energía')
-
                 # --- PASO 4: Crear el gráfico ---
                 fig_line = px.line(df_to_plot,
                                    x='Fecha',
@@ -387,6 +393,8 @@ if not df_combined.empty:
                 # Aseguramos que el eje X cubra todo el año
                 fig_line.update_xaxes(dtick="M1", tickformat="%b", range=[f'{selected_year}-01-01', f'{selected_year}-12-31'])
                 st.plotly_chart(fig_line, use_container_width=True)
+            else:
+                st.warning("No hay datos de consumo para mostrar en el gráfico de evolución.")
 
 # --- Comparativa Anual ---
         if comparar_anos and not df_comparativa.empty and not df_filtered.empty:

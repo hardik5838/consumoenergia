@@ -6,6 +6,8 @@ import plotly.graph_objects as go
 import os
 import json
 import requests
+from thefuzz import process
+
 
 # --- Configuración de la página ---
 st.set_page_config(
@@ -300,36 +302,45 @@ if not df_combined.empty:
             cost_breakdown.columns = ['Componente', 'Coste']
             fig_cost_pie = px.pie(cost_breakdown, names='Componente', values='Coste', hole=0.4)
             st.plotly_chart(fig_cost_pie, use_container_width=True)
-
         with map_col:
+            st.markdown(f"**Análisis Geográfico**")
             geojson = get_geojson()
-            if geojson:
+            if geojson and not df_filtered.empty:
+                # --- PASO 1: Extraer los nombres de ambas fuentes ---
+                # Nombres exactos que existen en el archivo del mapa (GeoJSON)
+                geojson_names = list({f['properties']['name'] for f in geojson['features']})
+
+                # Nombres que existen en tu archivo de datos
                 df_map = df_filtered.groupby('Comunidad Autónoma')['Consumo_kWh'].sum().reset_index()
+                data_names = list(df_map['Comunidad Autónoma'].unique())
+
+                # --- PASO 2: Crear un mapeo automático e inteligente ---
+                name_mapping = {}
+                for data_name in data_names:
+                    # 'process.extractOne' encuentra la mejor coincidencia para 'data_name' en la lista 'geojson_names'
+                    # Devuelve una tupla: (nombre_coincidente, puntuación_de_similitud)
+                    match = process.extractOne(data_name, geojson_names)
+                    
+                    # Nos aseguramos de que la coincidencia sea lo suficientemente buena (más del 80% de similitud)
+                    if match and match[1] > 80:
+                        name_mapping[data_name] = match[0]
+
+                # --- PASO 3: Aplicar el mapeo y dibujar el mapa ---
+                # Aplicamos el mapeo para estandarizar los nombres de las comunidades
+                df_map['location_key'] = df_map['Comunidad Autónoma'].map(name_mapping)
                 
-                # --- AJUSTE: Diccionario de mapeo completo ---
-                # "Traducimos" los nombres de tu DataFrame para que coincidan con los del GeoJSON.
-                map_name_to_geojson_name = {
-                    "Andalucía": "Andalusia",
-                    "Aragón": "Aragon",
-                    "Principado de Asturias": "Asturias",
-                    "Islas Baleares": "Illes Balears",
-                    "País Vasco": "País Vasco / Euskadi",
-                    "Canarias": "Canary Islands",
-                    "Castilla y León": "Castile and León",
-                    "Cataluña": "Catalonia",
-                    "Comunidad de Madrid": "Community of Madrid",
-                    "Comunidad Foral de Navarra": "Navarra",
-                    "Comunidad Valenciana": "Valencian Community",
-                    "Región de Murcia": "Murcia"
-                    # Las demás regiones suelen tener nombres que ya coinciden.
-                }
-                df_map['Comunidad Autónoma'] = df_map['Comunidad Autónoma'].replace(map_name_to_geojson_name)
-                
-                fig_map = px.choropleth_mapbox(df_map, geojson=geojson, locations='Comunidad Autónoma',
-                                               featureidkey="properties.name", color='Consumo_kWh',
-                                               color_continuous_scale="Viridis", mapbox_style="carto-positron",
+                # Eliminamos cualquier fila que no haya encontrado una coincidencia válida
+                df_map.dropna(subset=['location_key'], inplace=True)
+
+                fig_map = px.choropleth_mapbox(df_map, 
+                                               geojson=geojson, 
+                                               locations='location_key', # Usamos la nueva columna con nombres corregidos
+                                               featureidkey="properties.name", 
+                                               color='Consumo_kWh',
+                                               color_continuous_scale="Viridis", 
+                                               mapbox_style="carto-positron",
                                                zoom=4.5, center={"lat": 40.4168, "lon": -3.7038},
-                                               title="Consumo Energético Total por Comunidad Autónoma")
+                                               title="Consumo por Comunidad Autónoma")
                 st.plotly_chart(fig_map, use_container_width=True)
 
         # --- Evolución y Comparativas ---

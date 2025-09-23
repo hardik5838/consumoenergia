@@ -305,7 +305,24 @@ if not df_combined.empty:
             geojson = get_geojson()
             if geojson:
                 df_map = df_filtered.groupby('Comunidad Autónoma')['Consumo_kWh'].sum().reset_index()
-                map_name_to_geojson_name = {"Principado de Asturias": "Asturias", "Islas Baleares": "Illes Balears", "País Vasco": "País Vasco / Euskadi", "Comunidad Foral de Navarra": "Navarra"}
+                
+                # --- AJUSTE: Diccionario de mapeo completo ---
+                # "Traducimos" los nombres de tu DataFrame para que coincidan con los del GeoJSON.
+                map_name_to_geojson_name = {
+                    "Andalucía": "Andalusia",
+                    "Aragón": "Aragon",
+                    "Principado de Asturias": "Asturias",
+                    "Islas Baleares": "Illes Balears",
+                    "País Vasco": "País Vasco / Euskadi",
+                    "Canarias": "Canary Islands",
+                    "Castilla y León": "Castile and León",
+                    "Cataluña": "Catalonia",
+                    "Comunidad de Madrid": "Community of Madrid",
+                    "Comunidad Foral de Navarra": "Navarra",
+                    "Comunidad Valenciana": "Valencian Community",
+                    "Región de Murcia": "Murcia"
+                    # Las demás regiones suelen tener nombres que ya coinciden.
+                }
                 df_map['Comunidad Autónoma'] = df_map['Comunidad Autónoma'].replace(map_name_to_geojson_name)
                 
                 fig_map = px.choropleth_mapbox(df_map, geojson=geojson, locations='Comunidad Autónoma',
@@ -314,8 +331,6 @@ if not df_combined.empty:
                                                zoom=4.5, center={"lat": 40.4168, "lon": -3.7038},
                                                title="Consumo Energético Total por Comunidad Autónoma")
                 st.plotly_chart(fig_map, use_container_width=True)
-
-        st.markdown("---")
 
         # --- Evolución y Comparativas ---
         st.subheader("Análisis Detallado y Evolución")

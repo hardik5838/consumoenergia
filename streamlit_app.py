@@ -225,7 +225,7 @@ try:
             path_gas_consumos = os.path.join(DATA_DIR, gas_consumos_file)
             path_gas_importes = os.path.join(DATA_DIR, gas_importes_file)
             # Asumimos que el año de los archivos de gas es el mismo que el de electricidad
-           df_gas = load_gas_data(path_gas_consumos, path_gas_importes)
+            df_gas = load_gas_data(path_gas_consumos, path_gas_importes)
 
         
         if comparar_anos and selected_file_comparativa:

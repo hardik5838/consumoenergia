@@ -96,12 +96,12 @@ def load_electricity_data(file_path):
         st.error(f"Error processing electricity file '{os.path.basename(file_path)}': {e}")
         return pd.DataFrame()
 
+
 @st.cache_data
 def load_gas_data(consumos_path, importes_path):
     """
     Definitively loads and processes gas data by pre-processing the raw file
-    to fix multi-line entries before parsing. This handles the specific format
-    of the Asepeyo TSV reports.
+    to fix multi-line entries and using the robust 'python' parsing engine.
     """
     def preprocess_and_read_tsv(file_path):
         """
@@ -111,10 +111,8 @@ def load_gas_data(consumos_path, importes_path):
         with open(file_path, 'r', encoding='utf-8') as f:
             lines = f.readlines()
 
-        # Find the header row, which is our reliable starting point
         header_index = -1
         for i, line in enumerate(lines):
-            # Using a broader check to find the header reliably
             if 'Nº' in line and 'Descripción' in line and 'CUPS' in line:
                 header_index = i
                 break
@@ -126,24 +124,19 @@ def load_gas_data(consumos_path, importes_path):
         header = lines[header_index].strip()
         data_lines = lines[header_index + 1:]
 
-        # Reconstruct the data, merging broken lines
         processed_lines = []
         for line in data_lines:
             line = line.strip()
             if not line: continue
-
-            # A valid new data row starts with a number in the first column.
-            # A broken, continuation line does not.
+            
             fields = line.split('\t')
-            is_new_record = fields[0].isdigit() or (fields[0].strip() == 'C.C.') # Add specific exceptions if needed
+            is_new_record = fields[0].isdigit() or (fields[0].strip() == 'C.C.')
 
             if is_new_record or not processed_lines:
                 processed_lines.append(line)
             else:
-                # This is a continuation of a broken line, so merge it with the previous one.
                 processed_lines[-1] = processed_lines[-1].strip() + " " + line.strip()
         
-        # Stop processing when we hit the footer notes.
         final_cleaned_lines = []
         for line in processed_lines:
             if line.startswith("Los consumos"):
@@ -153,9 +146,11 @@ def load_gas_data(consumos_path, importes_path):
         if not final_cleaned_lines:
             return pd.DataFrame()
 
-        # Use an in-memory string buffer to pass the cleaned data to pandas.
         full_file_string = header + "\n" + "\n".join(final_cleaned_lines)
-        return pd.read_csv(io.StringIO(full_file_string), sep='\t', decimal='.', thousands=',')
+        
+        # <<< THIS IS THE FIX >>>
+        # Using engine='python' to handle the tricky, manually-joined lines.
+        return pd.read_csv(io.StringIO(full_file_string), sep='\t', decimal='.', thousands=',', engine='python')
 
     def process_gas_file(df, value_name):
         """
@@ -199,7 +194,6 @@ def load_gas_data(consumos_path, importes_path):
 
         df_gas = pd.merge(consumos_long, importes_long, on=['Descripción', 'CUPS', 'Provincia', 'Año', 'Mes_str'])
 
-        # Final cleaning, mapping, and type conversion.
         df_gas['Consumo_kWh'] = pd.to_numeric(df_gas['Consumo_kWh'], errors='coerce').fillna(0)
         df_gas['Coste Total'] = pd.to_numeric(df_gas['Coste Total'], errors='coerce').fillna(0)
         
@@ -219,6 +213,7 @@ def load_gas_data(consumos_path, importes_path):
     except Exception as e:
         st.error(f"A critical error occurred while processing the gas files: {e}")
         return pd.DataFrame()
+        
 
         
 @st.cache_data

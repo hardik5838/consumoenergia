@@ -155,10 +155,14 @@ df_electricidad = pd.DataFrame()
 df_gas = pd.DataFrame()
 df_comparativa = pd.DataFrame()
 
+
 try:
-    files = [f for f in os.listdir(DATA_DIR) if f.endswith('.csv')]
+    # Modificamos la condición para que busque archivos que terminen en .csv O .tsv
+    files = [f for f in os.listdir(DATA_DIR) if f.endswith(('.csv', '.tsv'))]
+    
     if not files:
-        st.sidebar.warning(f"No se encontraron archivos CSV en la carpeta '{DATA_DIR}'.")
+        # Actualizamos el mensaje de advertencia para ser más claro
+        st.sidebar.warning(f"No se encontraron archivos CSV o TSV en la carpeta '{DATA_DIR}'.")
         st.stop()
     
     st.sidebar.markdown("### 📂 Selección de Datos")

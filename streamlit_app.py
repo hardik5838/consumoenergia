@@ -51,46 +51,48 @@ def get_voltage_type(rate):
     elif rate in ["2.0TD", "3.0TD"]: return "Baja Tensión"
     return "No definido"
 
-# --- Funciones de Carga de Datos ---
 @st.cache_data
 def load_electricity_data(file_path):
-    """Carga y procesa los datos de electricidad."""
+    """Loads and processes electricity data from a CSV or TSV file."""
     try:
-        # --- AJUSTE: Determinar separador dinámicamente ---
-        # Si el archivo es .tsv, usa una tabulación ('\t'). Si no, usa una coma (',').
         separator = '\t' if file_path.endswith('.tsv') else ','
-
         cols_to_use = [
             'CUPS', 'Estado de factura', 'Fecha desde', 'Provincia', 'Nombre suministro',
             'Tarifa de acceso', 'Consumo activa total (kWh)', 'Base imponible (€)',
             'Importe TE (€)', 'Importe TP (€)', 'Importe impuestos (€)', 'Importe alquiler (€)',
             'Importe otros conceptos (€)'
         ]
-        # Añadimos el parámetro 'sep' a la función de lectura
-        df = pd.read_csv(file_path, usecols=lambda c: c.strip() in cols_to_use, 
-                         parse_dates=['Fecha desde'], decimal='.', thousands=',', sep=separator)
-        
+        df = pd.read_csv(
+            file_path,
+            usecols=lambda c: c.strip() in cols_to_use,
+            parse_dates=['Fecha desde'],
+            decimal='.', thousands=',', sep=separator
+        )
+
         df.columns = df.columns.str.strip()
         df = df[df['Estado de factura'].str.upper() == 'ACTIVA']
         df.rename(columns={
-            'Nombre suministro': 'Centro', 'Base imponible (€)': 'Coste Total', 'Consumo activa total (kWh)': 'Consumo_kWh',
-            'Importe TE (€)': 'Coste Energía', 'Importe TP (€)': 'Coste Potencia', 'Importe impuestos (€)': 'Coste Impuestos',
+            'Nombre suministro': 'Centro', 'Base imponible (€)': 'Coste Total',
+            'Consumo activa total (kWh)': 'Consumo_kWh', 'Importe TE (€)': 'Coste Energía',
+            'Importe TP (€)': 'Coste Potencia', 'Importe impuestos (€)': 'Coste Impuestos',
             'Importe alquiler (€)': 'Coste Alquiler', 'Importe otros conceptos (€)': 'Coste Otros'
         }, inplace=True)
-        
-        numeric_cols = ['Coste Total', 'Consumo_kWh', 'Coste Energía', 'Coste Potencia', 'Coste Impuestos', 'Coste Alquiler', 'Coste Otros']
-        for col in numeric_cols: df[col] = pd.to_numeric(df[col], errors='coerce')
+
+        numeric_cols = ['Coste Total', 'Consumo_kWh', 'Coste Energía', 'Coste Potencia',
+                        'Coste Impuestos', 'Coste Alquiler', 'Coste Otros']
+        for col in numeric_cols:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
         df.fillna(0, inplace=True)
-        
+
         df['Año'] = df['Fecha desde'].dt.year
         df['Mes'] = df['Fecha desde'].dt.month
-        df['Comunidad Autónoma'] = df['Provincia'].map(province_to_community).astype('category')
-        df['Tipo de Tensión'] = df['Tarifa de acceso'].apply(get_voltage_type).astype('category')
+        df['Comunidad Autónoma'] = df['Provincia'].map(province_to_community)
+        df['Tipo de Tensión'] = df['Tarifa de acceso'].apply(get_voltage_type)
         df['Tipo de Energía'] = 'Electricidad'
         df.dropna(subset=['Comunidad Autónoma'], inplace=True)
         return df
     except Exception as e:
-        st.error(f"Error al procesar el archivo de electricidad '{os.path.basename(file_path)}': {e}")
+        st.error(f"Error processing electricity file '{os.path.basename(file_path)}': {e}")
         return pd.DataFrame()
 
 @st.cache_data
@@ -156,8 +158,6 @@ def load_gas_data(consumos_path, importes_path, year):
     except Exception as e:
         st.error(f"Error processing gas files: {e}")
         return pd.DataFrame()
-
-
 
 @st.cache_data
 def get_geojson():

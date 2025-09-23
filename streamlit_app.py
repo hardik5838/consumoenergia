@@ -110,10 +110,10 @@ def load_gas_data(consumos_path, importes_path):
         df = pd.read_csv(file_path, sep='\t', header=4, decimal='.', thousands=',')
         df.columns = df.columns.str.strip()
 
-        # 2. Robustly filter out all non-data rows (TOTALS, footers, etc.)
-        #    by keeping only rows where the first column ('Nº') is a valid number.
-        df.dropna(subset=['Nº'], inplace=True)
-        df = df[pd.to_numeric(df['Nº'], errors='coerce').notna()].copy()
+        # 2. <<< THIS IS THE FIX >>>
+        #    Robustly filter using the CUPS column instead of the 'Nº' column.
+        #    This correctly keeps all valid supply points and removes all junk rows.
+        df = df[df['CUPS'].str.startswith('ES', na=False)].copy()
         
         # 3. Define the structure for melting data from two different years.
         id_vars = ['Descripción', 'CUPS', 'Provincia']
@@ -173,7 +173,7 @@ def load_gas_data(consumos_path, importes_path):
     except Exception as e:
         st.error(f"A critical error occurred while processing the gas files: {e}")
         return pd.DataFrame()
-
+        
 @st.cache_data
 def get_geojson():
     url = "https://raw.githubusercontent.com/codeforamerica/click_that_hood/master/public/data/spain-communities.geojson"

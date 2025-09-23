@@ -88,8 +88,11 @@ def load_electricity_data(file_path):
 def load_gas_data(consumos_path, importes_path, year):
     """Carga, transforma y fusiona los datos de consumo y coste de gas."""
     try:
-        df_consumos = pd.read_csv(consumos_path, skiprows=4)
-        df_importes = pd.read_csv(importes_path, skiprows=4)
+        # --- AJUSTE 1: Mejorar la lectura del CSV ---
+        # Añadimos sep=';' porque es un separador común. También incluimos decimal y thousands
+        # para asegurar que los números se lean correctamente.
+        df_consumos = pd.read_csv(consumos_path, skiprows=4, sep=';', decimal='.', thousands=',')
+        df_importes = pd.read_csv(importes_path, skiprows=4, sep=';', decimal='.', thousands=',')
 
         df_consumos.columns = df_consumos.columns.str.strip()
         df_importes.columns = df_importes.columns.str.strip()
@@ -102,6 +105,16 @@ def load_gas_data(consumos_path, importes_path, year):
         
         df_gas = pd.merge(consumos_long, importes_long, on=['Descripción', 'CUPS', 'Provincia', 'Mes_str'])
         
+        # --- AJUSTE 2: Limpieza de datos (LA SOLUCIÓN PRINCIPAL) ---
+        # Convertimos las columnas a tipo numérico. `errors='coerce'` transformará
+        # cualquier valor que no sea un número en un valor nulo (NaN).
+        df_gas['Consumo_kWh'] = pd.to_numeric(df_gas['Consumo_kWh'], errors='coerce')
+        df_gas['Coste Total'] = pd.to_numeric(df_gas['Coste Total'], errors='coerce')
+        
+        # Reemplazamos los valores nulos (NaN) con 0 para poder hacer cálculos y comparaciones.
+        df_gas.fillna(0, inplace=True)
+        # --- FIN DE LOS AJUSTES ---
+
         month_map = {name: i+1 for i, name in enumerate(months_cols)}
         df_gas['Mes'] = df_gas['Mes_str'].map(month_map)
         df_gas['Año'] = year
@@ -111,14 +124,17 @@ def load_gas_data(consumos_path, importes_path, year):
         df_gas['Comunidad Autónoma'] = df_gas['Provincia'].map(province_to_community).astype('category')
 
         # Limpieza final
-        df_gas.dropna(subset=['Consumo_kWh', 'Coste Total', 'Comunidad Autónoma'], inplace=True)
-        df_gas = df_gas[df_gas['Consumo_kWh'] > 0] # Mantener solo registros con consumo
+        df_gas.dropna(subset=['Comunidad Autónoma'], inplace=True)
+        # Esta línea ahora funcionará sin errores porque 'Consumo_kWh' ya es numérico.
+        df_gas = df_gas[df_gas['Consumo_kWh'] > 0] 
         df_gas['Fecha desde'] = pd.to_datetime(df_gas['Año'].astype(str) + '-' + df_gas['Mes'].astype(str) + '-01')
 
         return df_gas[['Fecha desde', 'Centro', 'Provincia', 'Comunidad Autónoma', 'Consumo_kWh', 'Coste Total', 'Tipo de Energía', 'Año', 'Mes', 'CUPS']]
     except Exception as e:
         st.error(f"Error al procesar los archivos de gas: {e}")
         return pd.DataFrame()
+
+
 
 @st.cache_data
 def get_geojson():

@@ -4,3 +4,4 @@ altair
 requests
 altair_data_server
 plotly.express
+thefuzz

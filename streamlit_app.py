@@ -100,13 +100,13 @@ def load_electricity_data(file_path):
 @st.cache_data
 def load_gas_data(consumos_path, importes_path):
     """
-    Definitively loads and processes gas data by pre-processing the raw file
-    to fix multi-line entries and using the robust 'python' parsing engine.
+    Definitively loads and processes gas data by intelligently pre-processing 
+    the raw TSV file to fix multi-line entries before parsing.
     """
     def preprocess_and_read_tsv(file_path):
         """
-        Reads the raw TSV file, cleans it in-memory by merging broken multi-line
-        records, and then passes the clean data to pandas.
+        Reads the raw TSV file, cleans it in-memory by correctly merging broken 
+        multi-line records, and then passes the clean data to pandas.
         """
         with open(file_path, 'r', encoding='utf-8') as f:
             lines = f.readlines()
@@ -124,19 +124,40 @@ def load_gas_data(consumos_path, importes_path):
         header = lines[header_index].strip()
         data_lines = lines[header_index + 1:]
 
+        # --- REVISED PRE-PROCESSING LOGIC ---
         processed_lines = []
         for line in data_lines:
-            line = line.strip()
-            if not line: continue
+            stripped_line = line.strip()
+            if not stripped_line: continue
             
-            fields = line.split('\t')
+            # Identify the start of a new, valid record.
+            fields = stripped_line.split('\t')
             is_new_record = fields[0].isdigit() or (fields[0].strip() == 'C.C.')
 
             if is_new_record or not processed_lines:
-                processed_lines.append(line)
+                processed_lines.append(stripped_line)
             else:
-                processed_lines[-1] = processed_lines[-1].strip() + " " + line.strip()
+                # --- THIS IS THE CRITICAL FIX ---
+                # Instead of a simple join, we now correctly merge the broken description field.
+                # The first line ends mid-description, and the second line starts mid-description.
+                
+                # Get the last line added, which is the first part of the broken record.
+                prev_line_fields = processed_lines[-1].split('\t')
+                
+                # Get the content of the continuation line.
+                continuation_fields = stripped_line.split('\t')
+                
+                # Append the start of the continuation line to the description of the previous line.
+                # Example: "C.C." + " " + "Madrid (Eloy Gonzalo)"
+                prev_line_fields[1] += " " + continuation_fields[0]
+                
+                # Append the rest of the fields from the continuation line.
+                rebuilt_fields = prev_line_fields + continuation_fields[1:]
+                
+                # Re-join the fields with tabs and update the last line.
+                processed_lines[-1] = "\t".join(rebuilt_fields)
         
+        # Filter out footer content before creating the final string
         final_cleaned_lines = []
         for line in processed_lines:
             if line.startswith("Los consumos"):
@@ -148,66 +169,49 @@ def load_gas_data(consumos_path, importes_path):
 
         full_file_string = header + "\n" + "\n".join(final_cleaned_lines)
         
-        # <<< THIS IS THE FIX >>>
-        # Using engine='python' to handle the tricky, manually-joined lines.
+        # The default 'c' engine should now work with the correctly formatted string.
+        # Using 'python' engine remains a safe fallback.
         return pd.read_csv(io.StringIO(full_file_string), sep='\t', decimal='.', thousands=',', engine='python')
 
+    # The rest of the function remains the same as before
     def process_gas_file(df, value_name):
-        """
-        Takes a cleaned DataFrame and melts it from wide to long format.
-        """
         if df.empty:
             return pd.DataFrame()
-
         df.columns = df.columns.str.strip()
         df = df[df['CUPS'].str.startswith('ES', na=False)].copy()
-
         id_vars = ['Descripción', 'CUPS', 'Provincia']
         months_base = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic']
-        
         months_2024_cols = [m for m in months_base if m in df.columns]
         months_2025_cols = [f'{m}.1' for m in months_base if f'{m}.1' in df.columns]
-
         df_2024_long, df_2025_long = pd.DataFrame(), pd.DataFrame()
-
         if months_2024_cols:
             df_2024_long = pd.melt(df, id_vars=id_vars, value_vars=months_2024_cols, var_name='Mes_str', value_name=value_name)
             df_2024_long['Año'] = 2024
-            
         if months_2025_cols:
             df_2025_long = pd.melt(df, id_vars=id_vars, value_vars=months_2025_cols, var_name='Mes_str', value_name=value_name)
             df_2025_long['Año'] = 2025
             df_2025_long['Mes_str'] = df_2025_long['Mes_str'].str.replace('.1', '', regex=False)
-
         return pd.concat([df_2024_long, df_2025_long], ignore_index=True)
 
     try:
         df_consumos = preprocess_and_read_tsv(consumos_path)
         df_importes = preprocess_and_read_tsv(importes_path)
-
         consumos_long = process_gas_file(df_consumos, 'Consumo_kWh')
         importes_long = process_gas_file(df_importes, 'Coste Total')
-
         if consumos_long.empty or importes_long.empty:
             st.warning("Gas data appears empty after processing. Please check file contents.")
             return pd.DataFrame()
-
         df_gas = pd.merge(consumos_long, importes_long, on=['Descripción', 'CUPS', 'Provincia', 'Año', 'Mes_str'])
-
         df_gas['Consumo_kWh'] = pd.to_numeric(df_gas['Consumo_kWh'], errors='coerce').fillna(0)
         df_gas['Coste Total'] = pd.to_numeric(df_gas['Coste Total'], errors='coerce').fillna(0)
-        
         month_map = {name: i + 1 for i, name in enumerate(['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'])}
         df_gas['Mes'] = df_gas['Mes_str'].map(month_map)
-        
         df_gas.rename(columns={'Descripción': 'Centro'}, inplace=True)
         df_gas['Tipo de Energía'] = 'Gas'
         df_gas['Comunidad Autónoma'] = df_gas['Provincia'].map(province_to_community)
-        
         df_gas.dropna(subset=['Comunidad Autónoma', 'Mes'], inplace=True)
         df_gas = df_gas[df_gas['Consumo_kWh'] > 0]
         df_gas['Fecha desde'] = pd.to_datetime(df_gas['Año'].astype(str) + '-' + df_gas['Mes'].astype(str) + '-01')
-        
         return df_gas[['Fecha desde', 'Centro', 'Provincia', 'Comunidad Autónoma', 'Consumo_kWh', 'Coste Total', 'Tipo de Energía', 'Año', 'Mes', 'CUPS']]
     
     except Exception as e:

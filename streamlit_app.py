@@ -388,7 +388,7 @@ if not df_combined.empty:
                 fig_line.update_xaxes(dtick="M1", tickformat="%b", range=[f'{selected_year}-01-01', f'{selected_year}-12-31'])
                 st.plotly_chart(fig_line, use_container_width=True)
 
-    # --- Comparativa Anual ---
+# --- Comparativa Anual ---
         if comparar_anos and not df_comparativa.empty and not df_filtered.empty:
             st.markdown("---")
             st.subheader("Comparativa Anual de Electricidad")
@@ -397,31 +397,33 @@ if not df_combined.empty:
                 df_comp_filtered = df_comp_filtered[df_comp_filtered['Centro'].isin(selected_centros)]
 
             if not df_comp_filtered.empty:
-                prev_year = df_comp_filtered['Año'].unique()[0]
+                prev_year = df_comp_filtered['Año'].iloc[0]
 
-                # --- AJUSTE 1: Corregir nombre de la columna ---
-                # El nombre correcto es 'Consumo_kWh', no 'Consumo Eléctrico'.
-                df_current_year_monthly = df_filtered[df_filtered['Tipo de Energía'] == 'Electricidad'].groupby('Mes')['Consumo_kWh'].sum()
-                df_prev_year_monthly = df_comp_filtered.groupby('Mes')['Consumo_kWh'].sum()
-                
+                # --- PASO 1: Crear una plantilla de 12 meses ---
+                plantilla_meses = pd.DataFrame({'Mes': range(1, 13)})
+
+                # --- PASO 2: Preparar datos de ambos años ---
+                df_current_year_monthly = df_filtered[df_filtered['Tipo de Energía'] == 'Electricidad'].groupby('Mes')['Consumo_kWh'].sum().reset_index()
+                df_prev_year_monthly = df_comp_filtered.groupby('Mes')['Consumo_kWh'].sum().reset_index()
+
+                # --- PASO 3: Fusionar cada año con la plantilla para asegurar los 12 meses ---
+                df_current_full = pd.merge(plantilla_meses, df_current_year_monthly, on='Mes', how='left').fillna(0)
+                df_prev_full = pd.merge(plantilla_meses, df_prev_year_monthly, on='Mes', how='left').fillna(0)
+
+                # --- PASO 4: Combinar en un DataFrame final para graficar ---
+                # Usamos los datos completos para asegurar que ambas series tengan 12 puntos de datos.
                 comparison_df = pd.DataFrame({
-                    str(selected_year): df_current_year_monthly,
-                    str(prev_year): df_prev_year_monthly
-                }).reset_index()
+                    'Mes': plantilla_meses['Mes'],
+                    str(selected_year): df_current_full['Consumo_kWh'],
+                    str(prev_year): df_prev_full['Consumo_kWh']
+                })
+                
+                # Convertimos el número del mes a su nombre abreviado para el eje X
+                months_order = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"]
+                comparison_df['Mes_str'] = comparison_df['Mes'].apply(lambda x: months_order[x-1])
 
-                # --- AJUSTE 2: Ordenar por mes antes de graficar ---
-                # Esta es la clave para que el eje X del gráfico de barras se vea ordenado.
-                comparison_df = comparison_df.sort_values('Mes')
-                
-                comparison_df['Mes'] = comparison_df['Mes'].apply(lambda x: pd.to_datetime(f'2024-{x}-01').strftime('%b'))
-                
-                fig_comp = px.bar(comparison_df, x='Mes', y=[str(selected_year), str(prev_year)], barmode='group',
+                fig_comp = px.bar(comparison_df, x='Mes_str', y=[str(selected_year), str(prev_year)], barmode='group',
                                   title=f'Comparativa de Consumo Mensual: {selected_year} vs. {prev_year}',
-                                  labels={'value': 'Consumo Eléctrico (kWh)'})
+                                  labels={'value': 'Consumo Eléctrico (kWh)', 'Mes_str': 'Mes'},
+                                  category_orders={"Mes_str": months_order}) # Asegura el orden correcto
                 st.plotly_chart(fig_comp, use_container_width=True)
-    
-    else:
-        st.warning("No hay datos disponibles para la selección de filtros actual.")
-else:
-    st.error("No se pudo cargar el archivo de datos de electricidad. Por favor, selecciona un archivo válido.")
-

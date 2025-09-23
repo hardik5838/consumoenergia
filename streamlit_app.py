@@ -6,6 +6,7 @@ import plotly.graph_objects as go
 import os
 import json
 import requests
+import io
 from thefuzz import process
 
 
@@ -98,64 +99,110 @@ def load_electricity_data(file_path):
 @st.cache_data
 def load_gas_data(consumos_path, importes_path):
     """
-    Robustly loads, processes, and merges gas consumption and cost data from
-    complex TSV files containing multiple years and non-data rows.
+    Definitively loads and processes gas data by pre-processing the raw file
+    to fix multi-line entries before parsing. This handles the specific format
+    of the Asepeyo TSV reports.
     """
-    def process_gas_file(file_path, value_name):
+    def preprocess_and_read_tsv(file_path):
         """
-        Internal function to read and clean a single gas TSV file (consumption or cost),
-        transforming it from a wide to a long format.
+        Reads the raw TSV file, cleans it in-memory by merging broken multi-line
+        records, and then passes the clean data to pandas.
         """
-        # 1. Read the TSV, correctly identifying the header on the 5th line (index 4).
-        df = pd.read_csv(file_path, sep='\t', header=4, decimal='.', thousands=',')
-        df.columns = df.columns.str.strip()
+        with open(file_path, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
 
-        # 2. <<< THIS IS THE FIX >>>
-        #    Robustly filter using the CUPS column instead of the 'Nº' column.
-        #    This correctly keeps all valid supply points and removes all junk rows.
-        df = df[df['CUPS'].str.startswith('ES', na=False)].copy()
+        # Find the header row, which is our reliable starting point
+        header_index = -1
+        for i, line in enumerate(lines):
+            # Using a broader check to find the header reliably
+            if 'Nº' in line and 'Descripción' in line and 'CUPS' in line:
+                header_index = i
+                break
         
-        # 3. Define the structure for melting data from two different years.
+        if header_index == -1:
+            st.warning(f"Could not find a valid header row in {os.path.basename(file_path)}. Gas data may be incomplete.")
+            return pd.DataFrame()
+
+        header = lines[header_index].strip()
+        data_lines = lines[header_index + 1:]
+
+        # Reconstruct the data, merging broken lines
+        processed_lines = []
+        for line in data_lines:
+            line = line.strip()
+            if not line: continue
+
+            # A valid new data row starts with a number in the first column.
+            # A broken, continuation line does not.
+            fields = line.split('\t')
+            is_new_record = fields[0].isdigit() or (fields[0].strip() == 'C.C.') # Add specific exceptions if needed
+
+            if is_new_record or not processed_lines:
+                processed_lines.append(line)
+            else:
+                # This is a continuation of a broken line, so merge it with the previous one.
+                processed_lines[-1] = processed_lines[-1].strip() + " " + line.strip()
+        
+        # Stop processing when we hit the footer notes.
+        final_cleaned_lines = []
+        for line in processed_lines:
+            if line.startswith("Los consumos"):
+                break
+            final_cleaned_lines.append(line)
+
+        if not final_cleaned_lines:
+            return pd.DataFrame()
+
+        # Use an in-memory string buffer to pass the cleaned data to pandas.
+        full_file_string = header + "\n" + "\n".join(final_cleaned_lines)
+        return pd.read_csv(io.StringIO(full_file_string), sep='\t', decimal='.', thousands=',')
+
+    def process_gas_file(df, value_name):
+        """
+        Takes a cleaned DataFrame and melts it from wide to long format.
+        """
+        if df.empty:
+            return pd.DataFrame()
+
+        df.columns = df.columns.str.strip()
+        df = df[df['CUPS'].str.startswith('ES', na=False)].copy()
+
         id_vars = ['Descripción', 'CUPS', 'Provincia']
         months_base = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic']
         
-        # Pandas renames duplicate columns with a ".1" suffix. We target these for the second year.
         months_2024_cols = [m for m in months_base if m in df.columns]
         months_2025_cols = [f'{m}.1' for m in months_base if f'{m}.1' in df.columns]
 
         df_2024_long, df_2025_long = pd.DataFrame(), pd.DataFrame()
 
-        # 4. Process the first year's data (2024)
         if months_2024_cols:
             df_2024_long = pd.melt(df, id_vars=id_vars, value_vars=months_2024_cols, var_name='Mes_str', value_name=value_name)
             df_2024_long['Año'] = 2024
             
-        # 5. Process the second year's data (2025)
         if months_2025_cols:
             df_2025_long = pd.melt(df, id_vars=id_vars, value_vars=months_2025_cols, var_name='Mes_str', value_name=value_name)
             df_2025_long['Año'] = 2025
-            # Clean the month names by removing the ".1" suffix.
             df_2025_long['Mes_str'] = df_2025_long['Mes_str'].str.replace('.1', '', regex=False)
 
-        # 6. Combine data from both years into a single long-format DataFrame.
         return pd.concat([df_2024_long, df_2025_long], ignore_index=True)
 
     try:
-        # Process both the consumption and cost files.
-        consumos_long = process_gas_file(consumos_path, 'Consumo_kWh')
-        importes_long = process_gas_file(importes_path, 'Coste Total')
+        df_consumos = preprocess_and_read_tsv(consumos_path)
+        df_importes = preprocess_and_read_tsv(importes_path)
+
+        consumos_long = process_gas_file(df_consumos, 'Consumo_kWh')
+        importes_long = process_gas_file(df_importes, 'Coste Total')
 
         if consumos_long.empty or importes_long.empty:
-            st.warning("Gas data could not be processed. One or more gas files might be empty or in an unexpected format.")
+            st.warning("Gas data appears empty after processing. Please check file contents.")
             return pd.DataFrame()
 
-        # Merge the two DataFrames into a single, comprehensive gas dataset.
         df_gas = pd.merge(consumos_long, importes_long, on=['Descripción', 'CUPS', 'Provincia', 'Año', 'Mes_str'])
 
         # Final cleaning, mapping, and type conversion.
         df_gas['Consumo_kWh'] = pd.to_numeric(df_gas['Consumo_kWh'], errors='coerce').fillna(0)
         df_gas['Coste Total'] = pd.to_numeric(df_gas['Coste Total'], errors='coerce').fillna(0)
-
+        
         month_map = {name: i + 1 for i, name in enumerate(['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'])}
         df_gas['Mes'] = df_gas['Mes_str'].map(month_map)
         
@@ -167,12 +214,12 @@ def load_gas_data(consumos_path, importes_path):
         df_gas = df_gas[df_gas['Consumo_kWh'] > 0]
         df_gas['Fecha desde'] = pd.to_datetime(df_gas['Año'].astype(str) + '-' + df_gas['Mes'].astype(str) + '-01')
         
-        # Return the clean, ready-to-use DataFrame.
         return df_gas[['Fecha desde', 'Centro', 'Provincia', 'Comunidad Autónoma', 'Consumo_kWh', 'Coste Total', 'Tipo de Energía', 'Año', 'Mes', 'CUPS']]
     
     except Exception as e:
         st.error(f"A critical error occurred while processing the gas files: {e}")
         return pd.DataFrame()
+
         
 @st.cache_data
 def get_geojson():

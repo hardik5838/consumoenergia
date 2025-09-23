@@ -97,70 +97,48 @@ def load_electricity_data(file_path):
 def load_gas_data(consumos_path, importes_path, year):
     """Carga, transforma y fusiona los datos de consumo y coste de gas."""
     try:
-        # --- AJUSTE 1: Ignorar las filas de resumen al final del archivo ---
-        # El motor 'python' es necesario para usar 'skipfooter'.
-        df_consumos = pd.read_csv(consumos_path, skiprows=4, sep='\t', decimal='.', thousands=',', skipfooter=2, engine='python')
-        df_importes = pd.read_csv(importes_path, skiprows=4, sep='\t', decimal='.', thousands=',', skipfooter=2, engine='python')
+        # --- AJUSTE: Lógica de carga adaptable para manejar archivos con o sin pie de página ---
+        def robust_read(file_path):
+            try:
+                # 1. Intenta leer el archivo asumiendo que tiene un pie de página de 2 líneas
+                df = pd.read_csv(file_path, skiprows=4, sep='\t', decimal='.', thousands=',', skipfooter=2, engine='python')
+            except (ValueError, pd.errors.EmptyDataError):
+                # 2. Si falla, lo lee sin skipfooter (para archivos de año en curso)
+                df = pd.read_csv(file_path, skiprows=4, sep='\t', decimal='.', thousands=',')
+            return df
+
+        df_consumos = robust_read(consumos_path)
+        df_importes = robust_read(importes_path)
+        
+        if df_consumos.empty or df_importes.empty:
+            st.warning(f"Uno de los archivos de gas está vacío o no se pudo leer.")
+            return pd.DataFrame()
 
         # Limpiamos los nombres de las columnas de posibles espacios
         df_consumos.columns = df_consumos.columns.str.strip()
         df_importes.columns = df_importes.columns.str.strip()
 
-        # --- AJUSTE 2: Usar los nombres de mes exactos del archivo (capitalizados) ---
+        # Usar los nombres de mes capitalizados como en el archivo
         id_vars = ['Descripción', 'CUPS', 'Provincia']
         months_cols = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic']
 
-        # Filtramos para usar solo las columnas de meses que realmente existen en el DataFrame
         months_in_file_consumos = [col for col in months_cols if col in df_consumos.columns]
         months_in_file_importes = [col for col in months_cols if col in df_importes.columns]
         
-        # Transformar de formato ancho a largo (melt)
         consumos_long = pd.melt(df_consumos, id_vars=id_vars, value_vars=months_in_file_consumos, var_name='Mes_str', value_name='Consumo_kWh')
         importes_long = pd.melt(df_importes, id_vars=id_vars, value_vars=months_in_file_importes, var_name='Mes_str', value_name='Coste Total')
 
-        # Unir los datos de consumo y coste
         df_gas = pd.merge(consumos_long, importes_long, on=['Descripción', 'CUPS', 'Provincia', 'Mes_str'])
 
-        # Limpieza y transformación de datos
         df_gas['Consumo_kWh'] = pd.to_numeric(df_gas['Consumo_kWh'], errors='coerce')
         df_gas['Coste Total'] = pd.to_numeric(df_gas['Coste Total'], errors='coerce')
         df_gas.fillna(0, inplace=True)
         
-        # Mapeo de meses a números
         month_map = {name: i+1 for i, name in enumerate(months_cols)}
         df_gas['Mes'] = df_gas['Mes_str'].map(month_map)
         df_gas['Año'] = year
         
         df_gas.rename(columns={'Descripción': 'Centro'}, inplace=True)
-        
-        df_gas['Tipo de Energía'] = 'Gas'
-        df_gas['Comunidad Autónoma'] = df_gas['Provincia'].map(province_to_community).astype('category')
-
-        df_gas.dropna(subset=['Comunidad Autónoma', 'Mes'], inplace=True)
-        df_gas = df_gas[df_gas['Consumo_kWh'] > 0]
-        df_gas['Fecha desde'] = pd.to_datetime(df_gas['Año'].astype(str) + '-' + df_gas['Mes'].astype(str) + '-01')
-
-        return df_gas[['Fecha desde', 'Centro', 'Provincia', 'Comunidad Autónoma', 'Consumo_kWh', 'Coste Total', 'Tipo de Energía', 'Año', 'Mes', 'CUPS']]
-    except Exception as e:
-        st.error(f"Error al procesar los archivos de gas: {e}")
-        return pd.DataFrame()
-        # Transformar de formato ancho a largo (melt)
-        consumos_long = pd.melt(df_consumos, id_vars=id_cols_lower, value_vars=month_cols_in_consumos, var_name='mes_str', value_name='Consumo_kWh')
-        importes_long = pd.melt(df_importes, id_vars=id_cols_lower, value_vars=month_cols_in_importes, var_name='mes_str', value_name='Coste Total')
-
-        # Unir los datos de consumo y coste
-        df_gas = pd.merge(consumos_long, importes_long, on=id_cols_lower + ['mes_str'])
-
-        # Limpieza y transformación de datos
-        df_gas['Consumo_kWh'] = pd.to_numeric(df_gas['Consumo_kWh'], errors='coerce')
-        df_gas['Coste Total'] = pd.to_numeric(df_gas['Coste Total'], errors='coerce')
-        df_gas.fillna(0, inplace=True)
-        
-        df_gas['Mes'] = df_gas['mes_str'].map(month_map)
-        df_gas['Año'] = year
-        
-        # Renombrar columnas para consistencia con el resto de la app
-        df_gas.rename(columns={'descripción': 'Centro', 'provincia': 'Provincia'}, inplace=True)
         
         df_gas['Tipo de Energía'] = 'Gas'
         df_gas['Comunidad Autónoma'] = df_gas['Provincia'].map(province_to_community).astype('category')

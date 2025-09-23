@@ -329,24 +329,19 @@ if not df_combined.empty:
             st.plotly_chart(fig_bar_energy, use_container_width=True)
             
         with col2:
-                    st.markdown("**Evolución Mensual del Consumo**")
-        
-                    # --- AJUSTE DEFINITIVO: Forzar el filtro del año seleccionado ---
-                    # Creamos un nuevo DataFrame para el gráfico, asegurándonos de que SOLO
-                    # contenga datos del año seleccionado en el filtro. Esto evita cualquier
-                    # "contaminación" de datos del archivo de comparación.
-                    df_grafico = df_filtered[df_filtered['Año'] == selected_year].copy()
-                    
-                    # Ahora, creamos los datos mensuales a partir de este DataFrame limpio y ordenado
-                    df_monthly = df_grafico.groupby(['Mes', 'Tipo de Energía'])['Consumo_kWh'].sum().reset_index()
-                    df_monthly = df_monthly.sort_values('Mes')
-        
-                    df_monthly['Mes_str'] = df_monthly['Mes'].apply(lambda x: pd.to_datetime(f'{selected_year}-{x}-01').strftime('%b'))
-                    
-                    fig_line = px.line(df_monthly, x='Mes_str', y='Consumo_kWh', color='Tipo de Energía',
-                                       title="Consumo Mensual por Tipo de Energía", markers=True,
-                                       category_orders={"Mes_str": ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"]})
-                    st.plotly_chart(fig_line, use_container_width=True)
+            st.markdown("**Evolución Mensual del Consumo**")
+            df_chart_source = df_filtered[df_filtered['Año'] == selected_year].copy()
+            df_chart_source['Fecha'] = pd.to_datetime(df_chart_source['Año'].astype(str) + '-' + df_chart_source['Mes'].astype(str) + '-01')
+            df_monthly_new = df_chart_source.groupby(['Fecha', 'Tipo de Energía'])['Consumo_kWh'].sum().reset_index()
+            fig_line = px.line(df_monthly_new,
+                               x='Fecha',
+                               y='Consumo_kWh',
+                               color='Tipo de Energía',
+                               title="Consumo Mensual por Tipo de Energía",
+                               markers=True,
+                               labels={'Fecha': 'Mes', 'Consumo_kWh': 'Consumo (kWh)'})
+            fig_line.update_xaxes(dtick="M1", tickformat="%b")
+            st.plotly_chart(fig_line, use_container_width=True)
 
 
     # --- Comparativa Anual ---

@@ -102,27 +102,19 @@ def load_gas_data(consumos_path, importes_path, year):
         df_consumos = pd.read_csv(consumos_path, skiprows=4, sep=sep_consumos, decimal='.', thousands=',')
         df_importes = pd.read_csv(importes_path, skiprows=4, sep=sep_importes, decimal='.', thousands=',')
 
-        # --- AJUSTE: Normalizar nombres de columnas a minúsculas ---
+        # Normalizar nombres de columnas a minúsculas
         df_consumos.columns = df_consumos.columns.str.strip().str.lower()
         df_importes.columns = df_importes.columns.str.strip().str.lower()
 
         # Diccionario flexible para reconocer varios formatos de meses
         month_map = {
-            'ene': 1, 'jan': 1, 'enero': 1,
-            'feb': 2, 'febrero': 2,
-            'mar': 3, 'marzo': 3,
-            'abr': 4, 'apr': 4, 'abril': 4,
-            'may': 5, 'mayo': 5,
-            'jun': 6, 'junio': 6,
-            'jul': 7, 'julio': 7,
-            'ago': 8, 'aug': 8, 'agosto': 8,
-            'sep': 9, 'sept': 9, 'septiembre': 9,
-            'oct': 10, 'octubre': 10,
-            'nov': 11, 'noviembre': 11,
-            'dic': 12, 'dec': 12, 'diciembre': 12
+            'ene': 1, 'jan': 1, 'enero': 1, 'feb': 2, 'febrero': 2, 'mar': 3, 'marzo': 3,
+            'abr': 4, 'apr': 4, 'abril': 4, 'may': 5, 'mayo': 5, 'jun': 6, 'junio': 6,
+            'jul': 7, 'julio': 7, 'ago': 8, 'aug': 8, 'agosto': 8, 'sep': 9, 'sept': 9, 'septiembre': 9,
+            'oct': 10, 'octubre': 10, 'nov': 11, 'noviembre': 11, 'dic': 12, 'dec': 12, 'diciembre': 12
         }
 
-        # --- AJUSTE: Detectar columnas de meses dinámicamente ---
+        # Detectar columnas de meses dinámicamente
         id_cols_lower = ['descripción', 'cups', 'provincia']
         month_cols_in_consumos = [c for c in df_consumos.columns if c in month_map]
         month_cols_in_importes = [c for c in df_importes.columns if c in month_map]
@@ -130,6 +122,37 @@ def load_gas_data(consumos_path, importes_path, year):
         if not month_cols_in_consumos:
             st.warning("No se encontraron columnas de meses reconocibles en el archivo de consumos de gas.")
             return pd.DataFrame()
+
+        # Transformar de formato ancho a largo (melt)
+        consumos_long = pd.melt(df_consumos, id_vars=id_cols_lower, value_vars=month_cols_in_consumos, var_name='mes_str', value_name='Consumo_kWh')
+        importes_long = pd.melt(df_importes, id_vars=id_cols_lower, value_vars=month_cols_in_importes, var_name='mes_str', value_name='Coste Total')
+
+        # Unir los datos de consumo y coste
+        df_gas = pd.merge(consumos_long, importes_long, on=id_cols_lower + ['mes_str'])
+
+        # Limpieza y transformación de datos
+        df_gas['Consumo_kWh'] = pd.to_numeric(df_gas['Consumo_kWh'], errors='coerce')
+        df_gas['Coste Total'] = pd.to_numeric(df_gas['Coste Total'], errors='coerce')
+        df_gas.fillna(0, inplace=True)
+        
+        df_gas['Mes'] = df_gas['mes_str'].map(month_map)
+        df_gas['Año'] = year
+        
+        # --- AJUSTE CLAVE: Añadir 'cups': 'CUPS' al renombrar ---
+        # Esto asegura que la columna 'cups' vuelva a tener el nombre 'CUPS' en mayúsculas.
+        df_gas.rename(columns={'descripción': 'Centro', 'provincia': 'Provincia', 'cups': 'CUPS'}, inplace=True)
+        
+        df_gas['Tipo de Energía'] = 'Gas'
+        df_gas['Comunidad Autónoma'] = df_gas['Provincia'].map(province_to_community).astype('category')
+
+        df_gas.dropna(subset=['Comunidad Autónoma', 'Mes'], inplace=True)
+        df_gas = df_gas[df_gas['Consumo_kWh'] > 0]
+        df_gas['Fecha desde'] = pd.to_datetime(df_gas['Año'].astype(str) + '-' + df_gas['Mes'].astype(str) + '-01')
+
+        return df_gas[['Fecha desde', 'Centro', 'Provincia', 'Comunidad Autónoma', 'Consumo_kWh', 'Coste Total', 'Tipo de Energía', 'Año', 'Mes', 'CUPS']]
+    except Exception as e:
+        st.error(f"Error al procesar los archivos de gas: {e}")
+        return pd.DataFrame()
 
         # Transformar de formato ancho a largo (melt)
         consumos_long = pd.melt(df_consumos, id_vars=id_cols_lower, value_vars=month_cols_in_consumos, var_name='mes_str', value_name='Consumo_kWh')

@@ -119,19 +119,15 @@ def load_gas_data(consumos_path, importes_path):
             return None
 
         for i, line in enumerate(lines):
-            # The real header contains these specific column names
             if 'Nº' in line and 'Descripción' in line and 'CUPS' in line:
                 header_row_index = i
-            # The footer notes start with this phrase
             elif line.strip().startswith("Los consumos"):
                 footer_start_index = i
                 break
         
-        # If the footer phrase isn't found, assume data runs to the end of the file
         if footer_start_index == 0:
             footer_start_index = len(lines)
         
-        # Calculate how many rows to skip at the bottom
         rows_to_skip_at_end = len(lines) - footer_start_index
 
         # --- Step 2: Read the data using targeted pandas parameters ---
@@ -139,14 +135,14 @@ def load_gas_data(consumos_path, importes_path):
             df = pd.read_csv(
                 file_path,
                 sep='\t',
-                header=header_row_index,        # Tells pandas which row is the real header
-                skipfooter=rows_to_skip_at_end, # Tells pandas to ignore the notes at the end
-                engine='python',                # 'skipfooter' requires the python engine for reliability
-                na_values=['-'],                # Treat cells with just a hyphen as empty
+                header=header_row_index,
+                skipfooter=rows_to_skip_at_end,
+                engine='python',
+                on_bad_lines='skip', # <-- THIS IS THE FIX: It tells Pandas to ignore malformed rows.
+                na_values=['-'],
                 decimal='.',
                 thousands=','
             )
-            # Clean up the data by removing empty rows or summary rows (like TOTAL)
             df.dropna(subset=['CUPS'], inplace=True)
             df = df[df['CUPS'].str.contains('ES', na=False)]
             return df
@@ -167,7 +163,6 @@ def load_gas_data(consumos_path, importes_path):
         id_vars = ['Descripción', 'CUPS', 'Provincia']
         months_base = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic']
         
-        # Identify columns for 2024 and 2025 (pandas adds '.1' to duplicates)
         months_2024_cols = [m for m in months_base if m in df.columns]
         months_2025_cols = [f'{m}.1' for m in months_base if f'{m}.1' in df.columns]
         
@@ -195,10 +190,8 @@ def load_gas_data(consumos_path, importes_path):
             st.warning("Gas data appears empty after processing. Please check file contents.")
             return pd.DataFrame()
 
-        # Merge consumption and cost data
         df_gas = pd.merge(consumos_long, importes_long, on=['Descripción', 'CUPS', 'Provincia', 'Año', 'Mes_str'], how='outer')
         
-        # Final data cleaning and preparation
         df_gas['Consumo_kWh'] = pd.to_numeric(df_gas['Consumo_kWh'], errors='coerce').fillna(0)
         df_gas['Coste Total'] = pd.to_numeric(df_gas['Coste Total'], errors='coerce').fillna(0)
         
@@ -321,7 +314,6 @@ if not df_combined.empty:
     if selected_energy_type != 'Ambos':
         df_filtered = df_filtered[df_filtered['Tipo de Energía'] == selected_energy_type]
     
-    # El filtro de tensión solo aplica a la electricidad
     if 'Tipo de Tensión' in df_filtered.columns:
         df_electricidad_filtered = df_filtered[df_filtered['Tipo de Energía'] == 'Electricidad']
         df_gas_filtered = df_filtered[df_filtered['Tipo de Energía'] == 'Gas']
@@ -344,7 +336,7 @@ if not df_combined.empty:
         total_kwh = kwh_elec + kwh_gas
         total_cost = cost_elec + cost_gas
         num_suministros = df_filtered['CUPS'].nunique()
-        emisiones_co2 = (kwh_elec * CO2_FACTOR) / 1000 # Solo calculamos emisiones para electricidad
+        emisiones_co2 = (kwh_elec * CO2_FACTOR) / 1000 
         coste_medio = total_cost / total_kwh if total_kwh > 0 else 0
 
         st.subheader("Indicadores Energéticos Globales")
@@ -485,3 +477,4 @@ if not df_combined.empty:
                 st.plotly_chart(fig_comp, use_container_width=True)
 else:
     st.warning("No hay datos cargados para mostrar. Por favor, seleccione archivos en la barra lateral.")
+    

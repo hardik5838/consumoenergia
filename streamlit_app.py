@@ -100,125 +100,125 @@ def load_electricity_data(file_path):
 @st.cache_data
 def load_gas_data(consumos_path, importes_path):
     """
-    Definitively loads and processes gas data by intelligently pre-processing 
-    the raw TSV file to fix multi-line entries before parsing.
+    Loads and processes gas data by intelligently using pandas read_csv parameters
+    to handle complex report-style TSV files. (UPDATED FUNCTION)
     """
-    def preprocess_and_read_tsv(file_path):
+    def read_report_with_pandas(file_path):
         """
-        Reads the raw TSV file, cleans it in-memory by correctly merging broken 
-        multi-line records, and then passes the clean data to pandas.
+        Reads the report by first finding the header and footer locations,
+        then using pandas to read only the valid data block.
         """
-        with open(file_path, 'r', encoding='utf-8') as f:
-            lines = f.readlines()
+        # --- Step 1: Find the header and footer boundaries ---
+        header_row_index = 0
+        footer_start_index = 0
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+        except Exception as e:
+            st.error(f"Could not read file {os.path.basename(file_path)}: {e}")
+            return None
 
-        header_index = -1
         for i, line in enumerate(lines):
+            # The real header contains these specific column names
             if 'Nº' in line and 'Descripción' in line and 'CUPS' in line:
-                header_index = i
+                header_row_index = i
+            # The footer notes start with this phrase
+            elif line.strip().startswith("Los consumos"):
+                footer_start_index = i
                 break
         
-        if header_index == -1:
-            st.warning(f"Could not find a valid header row in {os.path.basename(file_path)}. Gas data may be incomplete.")
-            return pd.DataFrame()
-
-        header = lines[header_index].strip()
-        data_lines = lines[header_index + 1:]
-
-        # --- REVISED PRE-PROCESSING LOGIC ---
-        processed_lines = []
-        for line in data_lines:
-            stripped_line = line.strip()
-            if not stripped_line: continue
-            
-            # Identify the start of a new, valid record.
-            fields = stripped_line.split('\t')
-            is_new_record = fields[0].isdigit() or (fields[0].strip() == 'C.C.')
-
-            if is_new_record or not processed_lines:
-                processed_lines.append(stripped_line)
-            else:
-                # --- THIS IS THE CRITICAL FIX ---
-                # Instead of a simple join, we now correctly merge the broken description field.
-                # The first line ends mid-description, and the second line starts mid-description.
-                
-                # Get the last line added, which is the first part of the broken record.
-                prev_line_fields = processed_lines[-1].split('\t')
-                
-                # Get the content of the continuation line.
-                continuation_fields = stripped_line.split('\t')
-                
-                # Append the start of the continuation line to the description of the previous line.
-                # Example: "C.C." + " " + "Madrid (Eloy Gonzalo)"
-                prev_line_fields[1] += " " + continuation_fields[0]
-                
-                # Append the rest of the fields from the continuation line.
-                rebuilt_fields = prev_line_fields + continuation_fields[1:]
-                
-                # Re-join the fields with tabs and update the last line.
-                processed_lines[-1] = "\t".join(rebuilt_fields)
+        # If the footer phrase isn't found, assume data runs to the end of the file
+        if footer_start_index == 0:
+            footer_start_index = len(lines)
         
-        # Filter out footer content before creating the final string
-        final_cleaned_lines = []
-        for line in processed_lines:
-            if line.startswith("Los consumos"):
-                break
-            final_cleaned_lines.append(line)
+        # Calculate how many rows to skip at the bottom
+        rows_to_skip_at_end = len(lines) - footer_start_index
 
-        if not final_cleaned_lines:
-            return pd.DataFrame()
+        # --- Step 2: Read the data using targeted pandas parameters ---
+        try:
+            df = pd.read_csv(
+                file_path,
+                sep='\t',
+                header=header_row_index,        # Tells pandas which row is the real header
+                skipfooter=rows_to_skip_at_end, # Tells pandas to ignore the notes at the end
+                engine='python',                # 'skipfooter' requires the python engine for reliability
+                na_values=['-'],                # Treat cells with just a hyphen as empty
+                decimal='.',
+                thousands=','
+            )
+            # Clean up the data by removing empty rows or summary rows (like TOTAL)
+            df.dropna(subset=['CUPS'], inplace=True)
+            df = df[df['CUPS'].str.contains('ES', na=False)]
+            return df
+        except Exception as e:
+            st.error(f"Pandas failed to parse {os.path.basename(file_path)}: {e}")
+            return None
 
-        full_file_string = header + "\n" + "\n".join(final_cleaned_lines)
-        
-        # The default 'c' engine should now work with the correctly formatted string.
-        # Using 'python' engine remains a safe fallback.
-        return pd.read_csv(io.StringIO(full_file_string), sep='\t', decimal='.', thousands=',', engine='python')
-
-    # The rest of the function remains the same as before
     def process_gas_file(df, value_name):
-        if df.empty:
+        """
+        Melts the DataFrame from wide (monthly columns) to long format.
+        """
+        if df is None or df.empty:
             return pd.DataFrame()
+
         df.columns = df.columns.str.strip()
-        df = df[df['CUPS'].str.startswith('ES', na=False)].copy()
+        df['CUPS'] = df['CUPS'].astype(str)
+        
         id_vars = ['Descripción', 'CUPS', 'Provincia']
         months_base = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic']
+        
+        # Identify columns for 2024 and 2025 (pandas adds '.1' to duplicates)
         months_2024_cols = [m for m in months_base if m in df.columns]
         months_2025_cols = [f'{m}.1' for m in months_base if f'{m}.1' in df.columns]
+        
         df_2024_long, df_2025_long = pd.DataFrame(), pd.DataFrame()
+        
         if months_2024_cols:
             df_2024_long = pd.melt(df, id_vars=id_vars, value_vars=months_2024_cols, var_name='Mes_str', value_name=value_name)
             df_2024_long['Año'] = 2024
+            
         if months_2025_cols:
             df_2025_long = pd.melt(df, id_vars=id_vars, value_vars=months_2025_cols, var_name='Mes_str', value_name=value_name)
             df_2025_long['Año'] = 2025
             df_2025_long['Mes_str'] = df_2025_long['Mes_str'].str.replace('.1', '', regex=False)
+            
         return pd.concat([df_2024_long, df_2025_long], ignore_index=True)
 
     try:
-        df_consumos = preprocess_and_read_tsv(consumos_path)
-        df_importes = preprocess_and_read_tsv(importes_path)
+        df_consumos = read_report_with_pandas(consumos_path)
+        df_importes = read_report_with_pandas(importes_path)
+        
         consumos_long = process_gas_file(df_consumos, 'Consumo_kWh')
         importes_long = process_gas_file(df_importes, 'Coste Total')
+
         if consumos_long.empty or importes_long.empty:
             st.warning("Gas data appears empty after processing. Please check file contents.")
             return pd.DataFrame()
-        df_gas = pd.merge(consumos_long, importes_long, on=['Descripción', 'CUPS', 'Provincia', 'Año', 'Mes_str'])
+
+        # Merge consumption and cost data
+        df_gas = pd.merge(consumos_long, importes_long, on=['Descripción', 'CUPS', 'Provincia', 'Año', 'Mes_str'], how='outer')
+        
+        # Final data cleaning and preparation
         df_gas['Consumo_kWh'] = pd.to_numeric(df_gas['Consumo_kWh'], errors='coerce').fillna(0)
         df_gas['Coste Total'] = pd.to_numeric(df_gas['Coste Total'], errors='coerce').fillna(0)
+        
         month_map = {name: i + 1 for i, name in enumerate(['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'])}
         df_gas['Mes'] = df_gas['Mes_str'].map(month_map)
+        
         df_gas.rename(columns={'Descripción': 'Centro'}, inplace=True)
         df_gas['Tipo de Energía'] = 'Gas'
         df_gas['Comunidad Autónoma'] = df_gas['Provincia'].map(province_to_community)
+        
         df_gas.dropna(subset=['Comunidad Autónoma', 'Mes'], inplace=True)
-        df_gas = df_gas[df_gas['Consumo_kWh'] > 0]
+        df_gas = df_gas[(df_gas['Consumo_kWh'] > 0) | (df_gas['Coste Total'] > 0)]
+        
         df_gas['Fecha desde'] = pd.to_datetime(df_gas['Año'].astype(str) + '-' + df_gas['Mes'].astype(str) + '-01')
+        
         return df_gas[['Fecha desde', 'Centro', 'Provincia', 'Comunidad Autónoma', 'Consumo_kWh', 'Coste Total', 'Tipo de Energía', 'Año', 'Mes', 'CUPS']]
     
     except Exception as e:
         st.error(f"A critical error occurred while processing the gas files: {e}")
         return pd.DataFrame()
-        
-
         
 @st.cache_data
 def get_geojson():
@@ -239,13 +239,10 @@ df_electricidad = pd.DataFrame()
 df_gas = pd.DataFrame()
 df_comparativa = pd.DataFrame()
 
-
 try:
-    # Modificamos la condición para que busque archivos que terminen en .csv O .tsv
     files = [f for f in os.listdir(DATA_DIR) if f.endswith(('.csv', '.tsv'))]
     
     if not files:
-        # Actualizamos el mensaje de advertencia para ser más claro
         st.sidebar.warning(f"No se encontraron archivos CSV o TSV en la carpeta '{DATA_DIR}'.")
         st.stop()
     
@@ -253,7 +250,6 @@ try:
     col1, col2 = st.sidebar.columns(2)
     selected_file_electricidad = col1.selectbox("Electricidad (Actual)", files)
     
-    # --- AÑADIDO: Selectores para archivos de gas ---
     gas_consumos_file = col1.selectbox("Gas Consumos (Opcional)", [None] + files)
     gas_importes_file = col2.selectbox("Gas Costes (Opcional)", [None] + files)
     
@@ -270,11 +266,9 @@ try:
         if gas_consumos_file and gas_importes_file:
             path_gas_consumos = os.path.join(DATA_DIR, gas_consumos_file)
             path_gas_importes = os.path.join(DATA_DIR, gas_importes_file)
-            # Asumimos que el año de los archivos de gas es el mismo que el de electricidad
             df_gas = load_gas_data(path_gas_consumos, path_gas_importes)
-
         
-        if comparar_anos and selected_file_comparativa:
+        if comparar_anos and 'selected_file_comparativa' in locals():
             path_comp = os.path.join(DATA_DIR, selected_file_comparativa)
             df_comparativa = load_electricity_data(path_comp)
 
@@ -388,41 +382,29 @@ if not df_combined.empty:
             st.markdown(f"**Análisis Geográfico**")
             geojson = get_geojson()
             if geojson and not df_filtered.empty:
-                # --- PASO 1: Extraer los nombres de ambas fuentes ---
-                # Nombres exactos que existen en el archivo del mapa (GeoJSON)
                 geojson_names = list({f['properties']['name'] for f in geojson['features']})
 
-                # Nombres que existen en tu archivo de datos
                 df_map = df_filtered.groupby('Comunidad Autónoma')['Consumo_kWh'].sum().reset_index()
                 data_names = list(df_map['Comunidad Autónoma'].unique())
 
-                # --- PASO 2: Crear un mapeo automático e inteligente ---
                 name_mapping = {}
                 for data_name in data_names:
-                    # 'process.extractOne' encuentra la mejor coincidencia para 'data_name' en la lista 'geojson_names'
-                    # Devuelve una tupla: (nombre_coincidente, puntuación_de_similitud)
                     match = process.extractOne(data_name, geojson_names)
-                    
-                    # Nos aseguramos de que la coincidencia sea lo suficientemente buena (más del 80% de similitud)
                     if match and match[1] > 80:
                         name_mapping[data_name] = match[0]
 
-                # --- PASO 3: Aplicar el mapeo y dibujar el mapa ---
-                # Aplicamos el mapeo para estandarizar los nombres de las comunidades
                 df_map['location_key'] = df_map['Comunidad Autónoma'].map(name_mapping)
-                
-                # Eliminamos cualquier fila que no haya encontrado una coincidencia válida
                 df_map.dropna(subset=['location_key'], inplace=True)
 
-                fig_map = px.choropleth_mapbox(df_map, 
-                                               geojson=geojson, 
-                                               locations='location_key', # Usamos la nueva columna con nombres corregidos
-                                               featureidkey="properties.name", 
-                                               color='Consumo_kWh',
-                                               color_continuous_scale="Viridis", 
-                                               mapbox_style="carto-positron",
-                                               zoom=4.5, center={"lat": 40.4168, "lon": -3.7038},
-                                               title="Consumo por Comunidad Autónoma")
+                fig_map = px.choropleth_mapbox(df_map,
+                                                geojson=geojson,
+                                                locations='location_key',
+                                                featureidkey="properties.name",
+                                                color='Consumo_kWh',
+                                                color_continuous_scale="Viridis",
+                                                mapbox_style="carto-positron",
+                                                zoom=4.5, center={"lat": 40.4168, "lon": -3.7038},
+                                                title="Consumo por Comunidad Autónoma")
                 st.plotly_chart(fig_map, use_container_width=True)
 
         # --- Evolución y Comparativas ---
@@ -436,49 +418,39 @@ if not df_combined.empty:
             fig_bar_energy.update_layout(xaxis={'categoryorder':'total descending'})
             st.plotly_chart(fig_bar_energy, use_container_width=True)
             
-
         with col2:
             st.markdown("**Evolución Mensual del Consumo**")
 
-            # --- PASO 1: Crear una plantilla completa para todos los meses y tipos de energía ---
-            # Esto garantiza que siempre tengamos una estructura de 12 meses para Electricidad y Gas.
             tipos_energia_esperados = ['Electricidad', 'Gas']
             fechas_del_ano = pd.to_datetime([f'{selected_year}-{m}-01' for m in range(1, 13)])
             
-            # Creamos un DataFrame con todas las combinaciones posibles de fecha y tipo de energía.
             plantilla_completa = pd.MultiIndex.from_product(
-                [fechas_del_ano, tipos_energia_esperados], 
+                [fechas_del_ano, tipos_energia_esperados],
                 names=['Fecha', 'Tipo de Energía']
             ).to_frame(index=False)
 
-            # --- PASO 2: Preparar los datos de consumo reales ---
             df_chart_source = df_filtered[df_filtered['Año'] == selected_year].copy()
 
             if not df_chart_source.empty:
                 df_chart_source['Fecha'] = pd.to_datetime(df_chart_source['Año'].astype(str) + '-' + df_chart_source['Mes'].astype(str) + '-01')
                 df_consumo_real = df_chart_source.groupby(['Fecha', 'Tipo de Energía'])['Consumo_kWh'].sum().reset_index()
 
-                # --- PASO 3: Fusionar los datos reales con la plantilla completa ---
-                # El 'left merge' mantiene todas las filas de la plantilla y añade los datos de consumo.
-                # Los meses sin consumo quedarán como NaN, que rellenamos con 0.
                 df_to_plot = pd.merge(plantilla_completa, df_consumo_real, on=['Fecha', 'Tipo de Energía'], how='left').fillna(0)
                 
-                # --- PASO 4: Crear el gráfico ---
                 fig_line = px.line(df_to_plot,
-                                   x='Fecha',
-                                   y='Consumo_kWh',
-                                   color='Tipo de Energía',
-                                   title="Consumo Mensual por Tipo de Energía",
-                                   markers=True,
-                                   labels={'Fecha': 'Mes', 'Consumo_kWh': 'Consumo (kWh)'})
+                                    x='Fecha',
+                                    y='Consumo_kWh',
+                                    color='Tipo de Energía',
+                                    title="Consumo Mensual por Tipo de Energía",
+                                    markers=True,
+                                    labels={'Fecha': 'Mes', 'Consumo_kWh': 'Consumo (kWh)'})
 
-                # Aseguramos que el eje X cubra todo el año
                 fig_line.update_xaxes(dtick="M1", tickformat="%b", range=[f'{selected_year}-01-01', f'{selected_year}-12-31'])
                 st.plotly_chart(fig_line, use_container_width=True)
             else:
                 st.warning("No hay datos de consumo para mostrar en el gráfico de evolución.")
 
-# --- Comparativa Anual ---
+        # --- Comparativa Anual ---
         if comparar_anos and not df_comparativa.empty and not df_filtered.empty:
             st.markdown("---")
             st.subheader("Comparativa Anual de Electricidad")
@@ -489,31 +461,27 @@ if not df_combined.empty:
             if not df_comp_filtered.empty:
                 prev_year = df_comp_filtered['Año'].iloc[0]
 
-                # --- PASO 1: Crear una plantilla de 12 meses ---
                 plantilla_meses = pd.DataFrame({'Mes': range(1, 13)})
 
-                # --- PASO 2: Preparar datos de ambos años ---
                 df_current_year_monthly = df_filtered[df_filtered['Tipo de Energía'] == 'Electricidad'].groupby('Mes')['Consumo_kWh'].sum().reset_index()
                 df_prev_year_monthly = df_comp_filtered.groupby('Mes')['Consumo_kWh'].sum().reset_index()
 
-                # --- PASO 3: Fusionar cada año con la plantilla para asegurar los 12 meses ---
                 df_current_full = pd.merge(plantilla_meses, df_current_year_monthly, on='Mes', how='left').fillna(0)
                 df_prev_full = pd.merge(plantilla_meses, df_prev_year_monthly, on='Mes', how='left').fillna(0)
 
-                # --- PASO 4: Combinar en un DataFrame final para graficar ---
-                # Usamos los datos completos para asegurar que ambas series tengan 12 puntos de datos.
                 comparison_df = pd.DataFrame({
                     'Mes': plantilla_meses['Mes'],
                     str(selected_year): df_current_full['Consumo_kWh'],
                     str(prev_year): df_prev_full['Consumo_kWh']
                 })
                 
-                # Convertimos el número del mes a su nombre abreviado para el eje X
                 months_order = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"]
                 comparison_df['Mes_str'] = comparison_df['Mes'].apply(lambda x: months_order[x-1])
 
                 fig_comp = px.bar(comparison_df, x='Mes_str', y=[str(selected_year), str(prev_year)], barmode='group',
-                                  title=f'Comparativa de Consumo Mensual: {selected_year} vs. {prev_year}',
-                                  labels={'value': 'Consumo Eléctrico (kWh)', 'Mes_str': 'Mes'},
-                                  category_orders={"Mes_str": months_order}) # Asegura el orden correcto
+                                    title=f'Comparativa de Consumo Mensual: {selected_year} vs. {prev_year}',
+                                    labels={'value': 'Consumo Eléctrico (kWh)', 'Mes_str': 'Mes'},
+                                    category_orders={"Mes_str": months_order})
                 st.plotly_chart(fig_comp, use_container_width=True)
+else:
+    st.warning("No hay datos cargados para mostrar. Por favor, seleccione archivos en la barra lateral.")

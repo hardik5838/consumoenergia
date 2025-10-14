@@ -9,7 +9,6 @@ import requests
 import io
 from thefuzz import process
 
-
 # --- Configuración de la página ---
 st.set_page_config(
     page_title="Informe Anual de Energía - Asepeyo",
@@ -19,7 +18,7 @@ st.set_page_config(
 )
 
 # --- Constantes y Mapeos ---
-CO2_FACTOR = 0.19 # Factor de emisión en tCO2e por MWh (toneladas de CO2 por megavatio-hora)
+CO2_FACTOR = 0.19  # Factor de emisión en tCO2e por MWh
 
 province_to_community = {
     'Almería': 'Andalucía', 'Cádiz': 'Andalucía', 'Córdoba': 'Andalucía', 'Granada': 'Andalucía',
@@ -53,13 +52,11 @@ def get_voltage_type(rate):
     return "No definido"
 
 @st.cache_data
-def load_electricity_data(file_path):
-    """Carga y procesa los datos de electricidad desde un archivo CSV o TSV."""
+def load_electricity_data(source):
+    """Carga y procesa datos de electricidad desde una URL o ruta local."""
     try:
-        separator = '\t' if file_path.endswith('.tsv') else ','
-        # Para el archivo de gas, el separador podría ser ';'
-        if 'gas' in os.path.basename(file_path).lower():
-            separator = ';'
+        file_name = source.split('/')[-1] if isinstance(source, str) and source.startswith('http') else os.path.basename(source)
+        separator = '\t' if file_name.endswith('.tsv') else ','
         
         cols_to_use = [
             'CUPS', 'Estado de factura', 'Fecha desde', 'Provincia', 'Nombre suministro',
@@ -68,11 +65,12 @@ def load_electricity_data(file_path):
             'Importe otros conceptos (€)'
         ]
         df = pd.read_csv(
-            file_path,
+            source,
             usecols=lambda c: c.strip() in cols_to_use,
             parse_dates=['Fecha desde'],
             decimal='.', thousands=',', sep=separator,
-            dayfirst=True # Añadido para interpretar correctamente fechas como dd/mm/yyyy
+            dayfirst=True,
+            encoding='utf-8'
         )
 
         df.columns = df.columns.str.strip()
@@ -98,76 +96,68 @@ def load_electricity_data(file_path):
         df.dropna(subset=['Comunidad Autónoma'], inplace=True)
         return df
     except Exception as e:
-        st.error(f"Error procesando el archivo de electricidad '{os.path.basename(file_path)}': {e}")
+        st.error(f"Error procesando archivo de electricidad '{source.split('/')[-1]}': {e}")
         return pd.DataFrame()
 
-
-# --- ¡FUNCIÓN ACTUALIZADA! ---
 @st.cache_data
-def load_gas_data(file_path):
-    """Carga y procesa los datos de gas desde un único archivo CSV, de forma similar a la electricidad."""
+def load_gas_data(source):
+    """Carga y procesa datos de gas desde una URL o ruta local."""
     try:
-        # Detecta el separador, asumiendo que puede ser coma, punto y coma o tabulador.
-        with open(file_path, 'r', encoding='utf-8') as f:
-            first_line = f.readline()
-            if ';' in first_line:
-                separator = ';'
-            elif ',' in first_line:
-                separator = ','
-            else:
-                separator = '\t'
+        content = ""
+        file_name = ""
+        if isinstance(source, str) and source.startswith('http'):
+            response = requests.get(source)
+            response.raise_for_status()
+            content = io.StringIO(response.text)
+            file_name = source.split('/')[-1]
+        else:
+            with open(source, 'r', encoding='utf-8') as f:
+                content = io.StringIO(f.read())
+            file_name = os.path.basename(source)
+        
+        content.seek(0)
+        first_line = content.readline()
+        separator = ';' if ';' in first_line else ','
+        content.seek(0)
 
-        # Columnas relevantes para el gas. 'Consumo' es el nombre genérico.
         cols_to_use = [
             'CUPS', 'Estado de factura', 'Fecha desde', 'Provincia', 'Nombre suministro',
             'Consumo', 'Base imponible (€)'
         ]
         df = pd.read_csv(
-            file_path,
+            content,
             usecols=lambda c: c.strip() in cols_to_use,
             parse_dates=['Fecha desde'],
-            decimal=',', # A menudo los CSV españoles usan coma decimal
-            thousands='.', # Y punto para los miles
-            sep=separator,
-            dayfirst=True # Importante para formato de fecha dd/mm/yyyy
+            decimal=',', thousands='.', sep=separator,
+            dayfirst=True
         )
 
         df.columns = df.columns.str.strip()
-        
-        # Filtra por facturas activas
         if 'Estado de factura' in df.columns:
             df = df[df['Estado de factura'].str.upper() == 'ACTIVA']
             
-        # Renombra columnas para estandarizar
         df.rename(columns={
-            'Nombre suministro': 'Centro',
-            'Base imponible (€)': 'Coste Total',
-            'Consumo': 'Consumo_kWh' # Asume que la columna 'Consumo' está en kWh
+            'Nombre suministro': 'Centro', 'Base imponible (€)': 'Coste Total',
+            'Consumo': 'Consumo_kWh'
         }, inplace=True)
 
-        # Convierte a numérico y rellena NAs
         numeric_cols = ['Coste Total', 'Consumo_kWh']
         for col in numeric_cols:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col].astype(str).str.replace('.', '', regex=False).str.replace(',', '.', regex=False), errors='coerce')
         df.fillna(0, inplace=True)
 
-        # Crea columnas adicionales
         df['Año'] = df['Fecha desde'].dt.year
         df['Mes'] = df['Fecha desde'].dt.month
         df['Comunidad Autónoma'] = df['Provincia'].map(province_to_community)
         df['Tipo de Energía'] = 'Gas'
-        
-        # Elimina filas sin comunidad autónoma asignada
         df.dropna(subset=['Comunidad Autónoma'], inplace=True)
         
-        # Selecciona las columnas finales para mantener la consistencia
         final_cols = ['Fecha desde', 'Centro', 'Provincia', 'Comunidad Autónoma', 
                       'Consumo_kWh', 'Coste Total', 'Tipo de Energía', 'Año', 'Mes', 'CUPS']
-        return df[final_cols]
-
+        return df[[col for col in final_cols if col in df.columns]]
     except Exception as e:
-        st.error(f"Error procesando el archivo de gas '{os.path.basename(file_path)}': {e}")
+        st.error(f"Error procesando archivo de gas '{file_name}': {e}")
         return pd.DataFrame()
 
 @st.cache_data
@@ -180,61 +170,70 @@ def get_geojson():
         st.error(f"No se pudo descargar el mapa. Error: {e}")
         return None
 
+@st.cache_data
+def get_github_files(repo, path='data'):
+    """Obtiene una lista de archivos (CSV, TSV) de un directorio en GitHub."""
+    api_url = f"https://api.github.com/repos/{repo}/contents/{path}"
+    try:
+        response = requests.get(url=api_url)
+        response.raise_for_status()
+        files_json = response.json()
+        if isinstance(files_json, dict) and 'message' in files_json:
+            st.error(f"No se pudo encontrar el directorio '{path}'. Error de GitHub: {files_json['message']}")
+            return []
+        return [file['name'] for file in files_json if file['type'] == 'file' and file['name'].endswith(('.csv', '.tsv'))]
+    except requests.exceptions.RequestException as e:
+        st.error(f"Error al conectar con la API de GitHub: {e}")
+        return []
+
 # --- BARRA LATERAL (FILTROS) ---
 st.sidebar.image("Logo_ASEPEYO.png", width=200)
 st.sidebar.title('Filtros de Análisis')
 
-DATA_DIR = "Data/"
 df_electricidad = pd.DataFrame()
 df_gas = pd.DataFrame()
 df_comparativa = pd.DataFrame()
 
-try:
-    # Comprueba si el directorio de datos existe, si no, lo crea
-    if not os.path.exists(DATA_DIR):
-        os.makedirs(DATA_DIR)
-        
-    files = [f for f in os.listdir(DATA_DIR) if f.endswith(('.csv', '.tsv'))]
+st.sidebar.markdown("### ☁️ Fuente de Datos (GitHub)")
+github_repo = st.sidebar.text_input("Repositorio GitHub (usuario/repo)", "hardik5838/Energypatternanalysis")
+
+if github_repo:
+    files = get_github_files(github_repo, path='data')
     
     if not files:
-        st.sidebar.warning(f"No se encontraron archivos CSV o TSV en la carpeta '{DATA_DIR}'.")
-        st.info("Por favor, sube tus archivos de datos en la carpeta 'Data' para comenzar el análisis.")
+        st.sidebar.warning(f"No se encontraron archivos en la carpeta 'data' del repositorio.")
+        st.info("Verifica el nombre del repositorio y que la carpeta 'data' contenga archivos CSV o TSV.")
         st.stop()
-    
-    # --- ¡SECCIÓN ACTUALIZADA! ---
+        
     st.sidebar.markdown("### 📂 Selección de Datos")
     col1, col2 = st.sidebar.columns(2)
-    selected_file_electricidad = col1.selectbox("Electricidad (Actual)", files, index=0 if files else None)
     
-    # Selector único para el archivo de gas
+    selected_file_electricidad = col1.selectbox("Electricidad (Actual)", files, index=0 if files else None)
     selected_file_gas = col1.selectbox("Gas (Actual)", [None] + files)
     
     comparar_anos = st.sidebar.toggle("Comparar con año anterior")
     if comparar_anos:
         selected_file_comparativa = col2.selectbox("Electricidad (Anterior)", files, index=0 if files else None)
-    
-    # --- ¡SECCIÓN ACTUALIZADA! ---
-    # --- Carga de datos ---
-    with st.spinner('Cargando datos...'):
-        if selected_file_electricidad:
-            path_elec = os.path.join(DATA_DIR, selected_file_electricidad)
-            df_electricidad = load_electricity_data(path_elec)
-        
-        # Lógica de carga actualizada para gas
-        if selected_file_gas:
-            path_gas = os.path.join(DATA_DIR, selected_file_gas)
-            df_gas = load_gas_data(path_gas)
-        
-        if comparar_anos and 'selected_file_comparativa' in locals() and selected_file_comparativa:
-            path_comp = os.path.join(DATA_DIR, selected_file_comparativa)
-            df_comparativa = load_electricity_data(path_comp)
 
-except Exception as e:
-    st.sidebar.error(f"Ocurrió un error en la carga de archivos: {e}")
+    with st.spinner('Cargando datos desde GitHub...'):
+        base_url = f"https://raw.githubusercontent.com/{github_repo}/main/data/"
+
+        if selected_file_electricidad:
+            url_elec = base_url + selected_file_electricidad
+            df_electricidad = load_electricity_data(url_elec)
+        
+        if selected_file_gas:
+            url_gas = base_url + selected_file_gas
+            df_gas = load_gas_data(url_gas)
+            
+        if comparar_anos and 'selected_file_comparativa' in locals() and selected_file_comparativa:
+            url_comp = base_url + selected_file_comparativa
+            df_comparativa = load_electricity_data(url_comp)
+else:
+    st.sidebar.error("Introduce un repositorio de GitHub para continuar.")
     st.stop()
 
-
-# --- Combinar datos de Electricidad y Gas ---
+# --- Combinar datos ---
 df_combined = pd.concat([df_electricidad, df_gas], ignore_index=True)
 
 if not df_combined.empty:
@@ -262,7 +261,6 @@ if not df_combined.empty:
             st.sidebar.warning("No hay centros para las comunidades seleccionadas.")
             
     st.sidebar.markdown("---")
-    # Solo muestra el filtro de tensión si hay datos de electricidad
     if not df_electricidad.empty:
         st.sidebar.markdown("### ⚡ Filtro de Tensión (Electricidad)")
         tension_types = sorted(df_electricidad['Tipo de Tensión'].unique().tolist())
@@ -270,10 +268,8 @@ if not df_combined.empty:
     else:
         selected_tension = []
 
-
 # --- Lógica de la Aplicación Principal ---
 if not df_combined.empty:
-    
     # Aplicar filtros
     df_filtered = df_combined[
         (df_combined['Año'] == selected_year) &
@@ -283,12 +279,10 @@ if not df_combined.empty:
     if selected_energy_type != 'Ambos':
         df_filtered = df_filtered[df_filtered['Tipo de Energía'] == selected_energy_type]
     
-    # Aplica filtro de tensión solo a la parte de electricidad
     if selected_tension:
         df_electricidad_filtered = df_filtered[df_filtered['Tipo de Energía'] == 'Electricidad']
         df_gas_filtered = df_filtered[df_filtered['Tipo de Energía'] == 'Gas']
         
-        # Filtra solo si la columna 'Tipo de Tensión' existe para evitar errores
         if 'Tipo de Tensión' in df_electricidad_filtered.columns:
             df_electricidad_filtered = df_electricidad_filtered[df_electricidad_filtered['Tipo de Tensión'].isin(selected_tension)]
         
@@ -333,7 +327,6 @@ if not df_combined.empty:
         # --- Cuerpo del Dashboard ---
         columna_agrupar = 'Centro' if vista_por_centro and selected_centros else 'Comunidad Autónoma'
         
-        # --- Desglose de Costes y Mapa ---
         st.subheader(f"Análisis Geográfico y Desglose de Costes")
         map_col, cost_col = st.columns([0.6, 0.4])
         with cost_col:
@@ -341,7 +334,6 @@ if not df_combined.empty:
             cost_components = ['Coste Energía', 'Coste Potencia', 'Coste Impuestos', 'Coste Alquiler', 'Coste Otros']
             df_elec_costs = df_filtered[df_filtered['Tipo de Energía'] == 'Electricidad']
             
-            # Asegurarse de que las columnas existen antes de sumar
             cost_components_exist = [col for col in cost_components if col in df_elec_costs.columns]
             if not df_elec_costs.empty and cost_components_exist:
                 cost_breakdown = df_elec_costs[cost_components_exist].sum().reset_index()
@@ -356,77 +348,53 @@ if not df_combined.empty:
             geojson = get_geojson()
             if geojson and not df_filtered.empty:
                 geojson_names = list({f['properties']['name'] for f in geojson['features']})
-
                 df_map = df_filtered.groupby('Comunidad Autónoma')['Consumo_kWh'].sum().reset_index()
                 data_names = list(df_map['Comunidad Autónoma'].unique())
 
                 name_mapping = {}
                 for data_name in data_names:
                     match = process.extractOne(data_name, geojson_names)
-                    if match and match[1] > 80: # Umbral de coincidencia
+                    if match and match[1] > 80:
                         name_mapping[data_name] = match[0]
 
                 df_map['location_key'] = df_map['Comunidad Autónoma'].map(name_mapping)
                 df_map.dropna(subset=['location_key'], inplace=True)
 
                 if not df_map.empty:
-                    fig_map = px.choropleth_mapbox(df_map,
-                                                   geojson=geojson,
-                                                   locations='location_key',
-                                                   featureidkey="properties.name",
-                                                   color='Consumo_kWh',
-                                                   color_continuous_scale="Viridis",
-                                                   mapbox_style="carto-positron",
+                    fig_map = px.choropleth_mapbox(df_map, geojson=geojson, locations='location_key',
+                                                   featureidkey="properties.name", color='Consumo_kWh',
+                                                   color_continuous_scale="Viridis", mapbox_style="carto-positron",
                                                    zoom=4.5, center={"lat": 40.4168, "lon": -3.7038},
                                                    title="Consumo por Comunidad Autónoma")
                     st.plotly_chart(fig_map, use_container_width=True)
                 else:
                     st.warning("No se pudieron mapear los datos geográficos.")
 
-        # --- Evolución y Comparativas ---
         st.subheader("Análisis Detallado y Evolución")
         col1, col2 = st.columns(2, gap="large")
         with col1:
             st.markdown(f"**Consumo por {columna_agrupar} y Tipo de Energía**")
             df_grouped_energy = df_filtered.groupby([columna_agrupar, 'Tipo de Energía'])['Consumo_kWh'].sum().reset_index()
             fig_bar_energy = px.bar(df_grouped_energy.sort_values(by='Consumo_kWh', ascending=False),
-                                     x=columna_agrupar, y='Consumo_kWh', color='Tipo de Energía', barmode='stack')
+                                  x=columna_agrupar, y='Consumo_kWh', color='Tipo de Energía', barmode='stack')
             fig_bar_energy.update_layout(xaxis={'categoryorder':'total descending'})
             st.plotly_chart(fig_bar_energy, use_container_width=True)
             
         with col2:
             st.markdown("**Evolución Mensual del Consumo**")
-
-            tipos_energia_esperados = ['Electricidad', 'Gas']
-            fechas_del_ano = pd.to_datetime([f'{selected_year}-{m}-01' for m in range(1, 13)])
-            
-            plantilla_completa = pd.MultiIndex.from_product(
-                [fechas_del_ano, tipos_energia_esperados],
-                names=['Fecha', 'Tipo de Energía']
-            ).to_frame(index=False)
-
             df_chart_source = df_filtered[df_filtered['Año'] == selected_year].copy()
-
             if not df_chart_source.empty:
                 df_chart_source['Fecha'] = pd.to_datetime(df_chart_source['Año'].astype(str) + '-' + df_chart_source['Mes'].astype(str) + '-01')
                 df_consumo_real = df_chart_source.groupby(['Fecha', 'Tipo de Energía'])['Consumo_kWh'].sum().reset_index()
 
-                df_to_plot = pd.merge(plantilla_completa, df_consumo_real, on=['Fecha', 'Tipo de Energía'], how='left').fillna(0)
-                
-                fig_line = px.line(df_to_plot,
-                                   x='Fecha',
-                                   y='Consumo_kWh',
-                                   color='Tipo de Energía',
-                                   title="Consumo Mensual por Tipo de Energía",
-                                   markers=True,
+                fig_line = px.line(df_consumo_real, x='Fecha', y='Consumo_kWh', color='Tipo de Energía',
+                                   title="Consumo Mensual por Tipo de Energía", markers=True,
                                    labels={'Fecha': 'Mes', 'Consumo_kWh': 'Consumo (kWh)'})
-
                 fig_line.update_xaxes(dtick="M1", tickformat="%b", range=[f'{selected_year}-01-01', f'{selected_year}-12-31'])
                 st.plotly_chart(fig_line, use_container_width=True)
             else:
                 st.warning("No hay datos de consumo para mostrar en el gráfico de evolución.")
 
-        # --- Comparativa Anual ---
         if comparar_anos and not df_comparativa.empty and not df_filtered.empty:
             st.markdown("---")
             st.subheader("Comparativa Anual de Electricidad")
@@ -435,26 +403,18 @@ if not df_combined.empty:
                 df_comp_filtered = df_comp_filtered[df_comp_filtered['Comunidad Autónoma'].isin(selected_communities)]
             if selected_tension:
                 df_comp_filtered = df_comp_filtered[df_comp_filtered['Tipo de Tensión'].isin(selected_tension)]
-            
             if vista_por_centro and selected_centros:
                 df_comp_filtered = df_comp_filtered[df_comp_filtered['Centro'].isin(selected_centros)]
 
             if not df_comp_filtered.empty:
                 prev_year = df_comp_filtered['Año'].iloc[0]
-
-                plantilla_meses = pd.DataFrame({'Mes': range(1, 13)})
-
-                df_current_year_monthly = df_filtered[df_filtered['Tipo de Energía'] == 'Electricidad'].groupby('Mes')['Consumo_kWh'].sum().reset_index()
-                df_prev_year_monthly = df_comp_filtered.groupby('Mes')['Consumo_kWh'].sum().reset_index()
-
-                df_current_full = pd.merge(plantilla_meses, df_current_year_monthly, on='Mes', how='left').fillna(0)
-                df_prev_full = pd.merge(plantilla_meses, df_prev_year_monthly, on='Mes', how='left').fillna(0)
-
+                df_current_year_monthly = df_filtered[df_filtered['Tipo de Energía'] == 'Electricidad'].groupby('Mes')['Consumo_kWh'].sum()
+                df_prev_year_monthly = df_comp_filtered.groupby('Mes')['Consumo_kWh'].sum()
+                
                 comparison_df = pd.DataFrame({
-                    'Mes': plantilla_meses['Mes'],
-                    str(selected_year): df_current_full['Consumo_kWh'],
-                    str(prev_year): df_prev_full['Consumo_kWh']
-                })
+                    str(selected_year): df_current_year_monthly,
+                    str(prev_year): df_prev_year_monthly
+                }).reset_index()
                 
                 months_order = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"]
                 comparison_df['Mes_str'] = comparison_df['Mes'].apply(lambda x: months_order[x-1])

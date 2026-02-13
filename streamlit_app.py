@@ -1,21 +1,13 @@
 # Importar librerías
 
 import streamlit as st
-
 import pandas as pd
-
 import plotly.express as px
-
 import plotly.graph_objects as go
-
 import os
-
 import json
-
 import requests
-
 import io
-
 from thefuzz import process
 
 
@@ -27,11 +19,8 @@ from thefuzz import process
 st.set_page_config(
 
     page_title="Informe Anual de Energía - Asepeyo",
-
     page_icon="💡",
-
     layout="wide",
-
     initial_sidebar_state="expanded"
 
 )
@@ -61,21 +50,13 @@ province_to_community = {
     'Las Palmas': 'Canarias', 'Santa Cruz de Tenerife': 'Canarias',
 
     'Cantabria': 'Cantabria',
-
     'Ávila': 'Castilla y León', 'Burgos': 'Castilla y León', 'León': 'Castilla y León',
-
     'Palencia': 'Castilla y León', 'Salamanca': 'Castilla y León', 'Segovia': 'Castilla y León',
-
     'Soria': 'Castilla y León', 'Valladolid': 'Castilla y León', 'Zamora': 'Castilla y León',
-
     'Albacete': 'Castilla-La Mancha', 'Ciudad Real': 'Castilla-La Mancha', 'Cuenca': 'Castilla-La Mancha',
-
     'Guadalajara': 'Castilla-La Mancha', 'Toledo': 'Castilla-La Mancha',
-
     'Barcelona': 'Cataluña', 'Girona': 'Cataluña', 'Lleida': 'Cataluña', 'Tarragona': 'Cataluña',
-
     'Ceuta': 'Ceuta',
-
     'Badajoz': 'Extremadura', 'Cáceres': 'Extremadura',
 
     'Coruña, A': 'Galicia', 'Lugo': 'Galicia', 'Ourense': 'Galicia', 'Pontevedra': 'Galicia',
